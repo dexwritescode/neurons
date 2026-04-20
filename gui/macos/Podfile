@@ -1,0 +1,80 @@
+platform :osx, '10.15'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'ephemeral', 'Flutter-Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure \"flutter pub get\" is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Flutter-Generated.xcconfig, then run \"flutter pub get\""
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_macos_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+
+  flutter_install_all_macos_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_macos_build_settings(target)
+  end
+
+  # Inject a Run Script phase that copies libneurons_core.dylib (built by the
+  # CMake target neurons_core and staged to gui/macos/neurons_core_lib/lib/)
+  # into Contents/MacOS/ of the app bundle so dart:ffi can load it at runtime.
+  #
+  # This runs on every Xcode build so the dylib stays fresh after
+  # `./scripts/build_service_macos.sh` is run.
+  require 'xcodeproj'
+  runner_pbxproj = File.join(File.dirname(__FILE__), 'Runner.xcodeproj', 'project.pbxproj')
+  runner_project = Xcodeproj::Project.open(File.join(File.dirname(__FILE__), 'Runner.xcodeproj'))
+  runner_target  = runner_project.targets.find { |t| t.name == 'Runner' }
+
+  unless runner_target.nil?
+    phase_name = 'Copy libneurons_core.dylib'
+    existing   = runner_target.shell_script_build_phases.find { |p| p.name == phase_name }
+    if existing.nil?
+      phase = runner_target.new_shell_script_build_phase(phase_name)
+      # SRCROOT is the gui/macos directory; the dylib lives one level up in the
+      # neurons_core_lib staging dir that build_service_macos.sh populates.
+      phase.shell_script = <<~'SCRIPT'
+        DYLIB="$SRCROOT/neurons_core_lib/lib/libneurons_core.dylib"
+        if [ -f "$DYLIB" ]; then
+          # Sibling of the flutter runner binary — picked up by _openNeuronsCore() debug probe
+          cp "$DYLIB" "$BUILT_PRODUCTS_DIR/$EXECUTABLE_FOLDER_PATH/libneurons_core.dylib"
+          # Frameworks directory — picked up by _openNeuronsCore() first (release + debug)
+          mkdir -p "$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
+          cp "$DYLIB" "$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH/libneurons_core.dylib"
+          echo "Copied libneurons_core.dylib to MacOS/ and Frameworks/"
+        else
+          echo "warning: libneurons_core.dylib not staged — run ./scripts/build_service_macos.sh first"
+        fi
+      SCRIPT
+      runner_project.save
+      puts "Added '#{phase_name}' build phase to Runner target"
+    else
+      puts "Build phase '#{phase_name}' already present — skipping"
+    end
+  end
+end

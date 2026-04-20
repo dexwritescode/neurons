@@ -1,0 +1,3 @@
+# Generated from service/proto/neurons.proto — do not edit.
+# Regenerate with: scripts/gen_proto.sh
+*.dart

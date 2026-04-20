@@ -1,0 +1,232 @@
+syntax = "proto3";
+
+package neurons;
+
+// ── Service ──────────────────────────────────────────────────────────────────
+
+service NeuronsInference {
+  // Load a model from a local path. Unloads any previously loaded model.
+  rpc LoadModel      (LoadModelRequest)      returns (LoadModelResponse);
+
+  // Unload the current model and free resources.
+  rpc UnloadModel    (UnloadModelRequest)    returns (UnloadModelResponse);
+
+  // Generate tokens for a prompt. Streams one GenerateResponse per token.
+  // The final message has done=true and includes total token counts.
+  rpc Generate       (GenerateRequest)       returns (stream GenerateResponse);
+
+  // Return status of the service (loaded model, backend, etc.).
+  rpc GetStatus      (StatusRequest)         returns (StatusResponse);
+
+  // List models found in the models directory (~/.neurons/models/).
+  rpc ListModels     (ListModelsRequest)     returns (ListModelsResponse);
+
+  // Search HuggingFace Hub for models.
+  rpc SearchModels   (SearchModelsRequest)   returns (SearchModelsResponse);
+
+  // Fetch file list, total size, and README for a HuggingFace model.
+  rpc GetModelInfo   (GetModelInfoRequest)   returns (GetModelInfoResponse);
+
+  // Download a model from HuggingFace. Streams progress frames until done.
+  rpc DownloadModel  (DownloadModelRequest)  returns (stream DownloadProgressResponse);
+
+  // Cancel an active download by download_id.
+  rpc CancelDownload (CancelDownloadRequest) returns (CancelDownloadResponse);
+
+  // Set (or clear) the HuggingFace Bearer token for gated model access.
+  // Pass an empty string to clear. The token is held in memory only — never
+  // persisted by the service. Clients should re-send on reconnect.
+  rpc SetHfToken     (SetHfTokenRequest)     returns (SetHfTokenResponse);
+
+  // Stream log entries from the service. Stays open until client cancels.
+  rpc StreamLogs     (StreamLogsRequest)     returns (stream LogEntry);
+}
+
+// ── LoadModel ────────────────────────────────────────────────────────────────
+
+message LoadModelRequest {
+  string model_path = 1;  // Absolute path to the model directory
+}
+
+message LoadModelResponse {
+  bool   success                = 1;
+  string error                  = 2;  // Non-empty on failure
+  string model_type             = 3;  // e.g. "mistral", "llama"
+  uint32 vocab_size             = 4;
+  uint32 num_layers             = 5;
+  uint32 max_position_embeddings = 6;  // Model's maximum context length in tokens
+}
+
+// ── UnloadModel ──────────────────────────────────────────────────────────────
+
+message UnloadModelRequest {}
+
+message UnloadModelResponse {
+  bool success = 1;
+}
+
+// ── Generate ─────────────────────────────────────────────────────────────────
+
+message ChatMessage {
+  string role    = 1;  // "user" | "assistant" | "system"
+  string content = 2;
+}
+
+message SamplingParams {
+  float temperature   = 1;  // 0.0 = greedy
+  float top_p         = 2;
+  int32 top_k         = 3;
+  float rep_penalty   = 4;
+  int32 max_tokens    = 5;
+  int32 context_window = 6;  // Max tokens of context to include (0 = model max)
+}
+
+message GenerateRequest {
+  // Conversation history (all prior turns). The service applies the
+  // model's chat template to format the full prompt.
+  repeated ChatMessage history = 1;
+
+  // The new user message to respond to.
+  string prompt = 2;
+
+  // Sampling configuration. If omitted, service defaults apply.
+  SamplingParams params = 3;
+}
+
+message GenerateResponse {
+  string token         = 1;  // Decoded token text (one per message while done=false)
+  bool   done          = 2;  // True on the final message
+  uint32 prompt_tokens = 3;  // Only set when done=true
+  uint32 gen_tokens    = 4;  // Only set when done=true
+  string error         = 5;  // Non-empty if generation failed
+}
+
+// ── GetStatus ────────────────────────────────────────────────────────────────
+
+message StatusRequest {}
+
+// One GPU (or unified-memory device) registered on a node.
+message GpuSlot {
+  string gpu_id          = 1;  // "0", "1", … — unique within the node
+  string gpu_name        = 2;  // e.g. "Apple M2 Max", "NVIDIA RTX 4090"
+  uint64 vram_total_bytes = 3;  // 0 if unified / unknown
+  uint64 vram_used_bytes  = 4;  // 0 if not measurable
+  string loaded_model    = 5;  // model path, empty if none
+  string model_type      = 6;  // e.g. "gemma3", "llama", empty if none
+  float  tok_per_sec     = 7;  // last measured generation speed; 0 if idle
+}
+
+message StatusResponse {
+  bool   model_loaded             = 1;
+  string model_path               = 2;
+  string model_type               = 3;
+  string backend                  = 4;  // e.g. "mlx", "cuda", "cpu"
+  uint32 vocab_size               = 5;
+  uint32 num_layers               = 6;
+  uint32 max_position_embeddings  = 7;  // Model's maximum context length in tokens
+  repeated GpuSlot gpus           = 8;  // One entry per GPU/device on this node
+  uint32 http_port                = 9;  // OpenAI HTTP server port; 0 if not running
+}
+
+// ── ListModels ───────────────────────────────────────────────────────────────
+
+message ListModelsRequest {
+  string models_dir = 1;  // If empty, defaults to ~/.neurons/models/
+}
+
+message ModelInfo {
+  string name       = 1;  // e.g. "mlx-community/Mistral-7B-Instruct-v0.3-8bit"
+  string path       = 2;  // Absolute path
+  uint64 size_bytes = 3;  // Total size on disk
+}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+// ── SearchModels ──────────────────────────────────────────────────────────────
+
+message SearchModelsRequest {
+  string query  = 1;
+  int32  limit  = 2;  // 0 = server default (30)
+  string sort   = 3;  // "downloads" | "likes" | "trending" | "lastModified"; default "downloads"
+  repeated string pipeline_tags = 4;  // e.g. ["text-generation"]; empty = no filter
+  string author = 5;  // org filter e.g. "mlx-community"; empty = all
+}
+
+message HfModelResult {
+  string model_id  = 1;  // e.g. "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+  int64  downloads = 2;  // All-time download count from HuggingFace
+  bool   gated     = 3;  // Requires HuggingFace account approval to download
+}
+
+message SearchModelsResponse {
+  repeated HfModelResult results = 1;
+  string error = 2;
+}
+
+// ── GetModelInfo ──────────────────────────────────────────────────────────────
+
+message GetModelInfoRequest {
+  string model_id = 1;
+}
+
+message HfFileInfo {
+  string filename   = 1;
+  int64  size_bytes = 2;
+}
+
+message GetModelInfoResponse {
+  string              model_id         = 1;
+  int64               total_size_bytes = 2;
+  repeated HfFileInfo files            = 3;
+  string              readme           = 4;  // Raw markdown text
+  string              error            = 5;
+}
+
+// ── DownloadModel ─────────────────────────────────────────────────────────────
+
+message DownloadModelRequest {
+  string model_id = 1;
+}
+
+message DownloadProgressResponse {
+  string download_id      = 1;
+  string current_file     = 2;
+  int64  bytes_downloaded = 3;
+  int64  total_bytes      = 4;
+  double speed_bps        = 5;  // Bytes per second (smoothed)
+  bool   done             = 6;  // True on the final frame (success)
+  bool   cancelled        = 7;
+  string error            = 8;  // Non-empty if failed
+}
+
+// ── CancelDownload ────────────────────────────────────────────────────────────
+
+message CancelDownloadRequest {
+  string download_id = 1;
+}
+
+message CancelDownloadResponse {
+  bool success = 1;
+}
+
+// ── SetHfToken ────────────────────────────────────────────────────────────────
+
+message SetHfTokenRequest {
+  string token = 1;  // Bearer token; empty string clears
+}
+
+message SetHfTokenResponse {}
+
+// ── StreamLogs ────────────────────────────────────────────────────────────────
+
+message StreamLogsRequest {
+  string min_level = 1;  // "INFO" (default), "WARN", "ERROR"
+}
+
+message LogEntry {
+  int64  timestamp_ms = 1;
+  string level        = 2;  // "INFO" | "WARN" | "ERROR"
+  string message      = 3;
+}

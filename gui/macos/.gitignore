@@ -1,0 +1,13 @@
+# Flutter-related
+**/Flutter/ephemeral/
+**/Pods/
+
+# Xcode-related
+**/dgph
+**/xcuserdata/
+
+# neurons-service binary staging (populated by scripts/build_service_macos.sh)
+neurons_service_bin/
+
+# neurons_core dylib staging (populated by scripts/build_service_macos.sh)
+neurons_core_lib/
