@@ -269,9 +269,9 @@ bool ModelConfig::is_mistral_architecture() const {
 }
 
 bool ModelConfig::is_qwen2_architecture() const {
-    if (model_type != "qwen2") return false;
+    if (model_type != "qwen2" && model_type != "qwen3") return false;
     for (const auto& arch : architectures)
-        if (arch == "Qwen2ForCausalLM") return true;
+        if (arch == "Qwen2ForCausalLM" || arch == "Qwen3ForCausalLM") return true;
     return false;
 }
 

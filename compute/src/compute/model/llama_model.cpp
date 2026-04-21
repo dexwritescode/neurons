@@ -19,6 +19,7 @@ LlamaModel::LlamaModel(
     , tokenizer_(std::move(tokenizer))
     , weights_(std::move(weights))
     , backend_(backend)
+    , tool_family_(detect_tool_family(tokenizer_, config_))
 {}
 
 // ── Factory ───────────────────────────────────────────────────────────────────
@@ -482,6 +483,176 @@ size_t LlamaModel::num_parameters() const {
     for (const auto& [name, tensor] : weights_)
         total += tensor.size();
     return total;
+}
+
+// ── Tool-use ──────────────────────────────────────────────────────────────────
+
+LlamaModel::ToolFamily LlamaModel::detect_tool_family(
+    const SimpleBpeTokenizer& tok, const ModelConfig& cfg)
+{
+    // Qwen2.5 / Qwen3 Instruct: has <tool_call> in vocab (same format for both)
+    if ((cfg.model_type == "qwen2" || cfg.model_type == "qwen3") &&
+        tok.find_token_id("<tool_call>") != -1)
+        return ToolFamily::Qwen25;
+
+    // Llama 3.1+: has <|python_tag|> in vocab
+    if (cfg.model_type == "llama" && tok.find_token_id("<|python_tag|>") != -1)
+        return ToolFamily::Llama31;
+
+    // Mistral tool variants: has [TOOL_CALLS] token in vocab
+    if (cfg.model_type == "mistral" && tok.find_token_id("[TOOL_CALLS]") != -1)
+        return ToolFamily::MistralTool;
+
+    return ToolFamily::None;
+}
+
+bool LlamaModel::supports_tool_use() const {
+    return tool_family_ != ToolFamily::None;
+}
+
+std::string LlamaModel::format_tool_system_prompt(const std::string& tools_json) const {
+    switch (tool_family_) {
+    case ToolFamily::Qwen25:
+        return
+            "You are a helpful assistant with access to the following tools. "
+            "Use them when appropriate.\n\n"
+            "# Tools\n\n" + tools_json + "\n\n"
+            "When you need to call a tool, respond ONLY with:\n"
+            "<tool_call>\n"
+            "{\"name\": \"<tool_name>\", \"arguments\": {<args>}}\n"
+            "</tool_call>\n"
+            "Wait for the tool result before continuing.";
+
+    case ToolFamily::Llama31:
+        return
+            "You have access to the following tools:\n\n" + tools_json + "\n\n"
+            "When you need to call a tool, respond with:\n"
+            "<function_calls>\n"
+            "[{\"name\": \"<tool_name>\", \"arguments\": {<args>}}]\n"
+            "</function_calls>\n"
+            "Wait for the result before continuing.";
+
+    case ToolFamily::MistralTool:
+        return "[AVAILABLE_TOOLS] " + tools_json + " [/AVAILABLE_TOOLS]";
+
+    default:
+        return "";
+    }
+}
+
+std::optional<LanguageModel::ToolCall> LlamaModel::detect_tool_call(
+    const std::string& text) const
+{
+    switch (tool_family_) {
+
+    case ToolFamily::Qwen25: {
+        const auto open  = text.find("<tool_call>");
+        const auto close = text.find("</tool_call>");
+        if (open == std::string::npos || close == std::string::npos) return std::nullopt;
+        const std::string payload = text.substr(open + 11, close - open - 11);
+        // Parse {"name": "...", "arguments": {...}}
+        const auto name_start = payload.find("\"name\"");
+        const auto args_start = payload.find("\"arguments\"");
+        if (name_start == std::string::npos || args_start == std::string::npos)
+            return std::nullopt;
+        const auto nq1 = payload.find('"', name_start + 7);
+        const auto nq2 = payload.find('"', nq1 + 1);
+        if (nq1 == std::string::npos || nq2 == std::string::npos) return std::nullopt;
+        const auto ab = payload.find('{', args_start + 12);
+        if (ab == std::string::npos) return std::nullopt;
+        // Find the matching closing brace for arguments
+        int depth = 0; std::string::size_type ae = ab;
+        for (; ae < payload.size(); ++ae) {
+            if (payload[ae] == '{') ++depth;
+            else if (payload[ae] == '}') { if (--depth == 0) break; }
+        }
+        if (depth != 0) return std::nullopt;
+        ToolCall tc;
+        tc.name           = payload.substr(nq1 + 1, nq2 - nq1 - 1);
+        tc.arguments_json = payload.substr(ab, ae - ab + 1);
+        return tc;
+    }
+
+    case ToolFamily::Llama31: {
+        const auto open  = text.find("<function_calls>");
+        const auto close = text.find("</function_calls>");
+        if (open == std::string::npos || close == std::string::npos) return std::nullopt;
+        const std::string payload = text.substr(open + 16, close - open - 16);
+        // Payload is a JSON array: [{"name":"...","arguments":{...}}]
+        const auto name_start = payload.find("\"name\"");
+        const auto args_start = payload.find("\"arguments\"");
+        if (name_start == std::string::npos || args_start == std::string::npos)
+            return std::nullopt;
+        const auto nq1 = payload.find('"', name_start + 7);
+        const auto nq2 = payload.find('"', nq1 + 1);
+        if (nq1 == std::string::npos || nq2 == std::string::npos) return std::nullopt;
+        const auto ab = payload.find('{', args_start + 12);
+        if (ab == std::string::npos) return std::nullopt;
+        int depth = 0; std::string::size_type ae = ab;
+        for (; ae < payload.size(); ++ae) {
+            if (payload[ae] == '{') ++depth;
+            else if (payload[ae] == '}') { if (--depth == 0) break; }
+        }
+        if (depth != 0) return std::nullopt;
+        ToolCall tc;
+        tc.name           = payload.substr(nq1 + 1, nq2 - nq1 - 1);
+        tc.arguments_json = payload.substr(ab, ae - ab + 1);
+        return tc;
+    }
+
+    case ToolFamily::MistralTool: {
+        // [TOOL_CALLS] [{"name":"...","arguments":{...}}]
+        const auto marker = text.find("[TOOL_CALLS]");
+        if (marker == std::string::npos) return std::nullopt;
+        const auto ab = text.find('[', marker + 12);
+        if (ab == std::string::npos) return std::nullopt;
+        // Find matching ] for the outer array
+        int depth = 0; std::string::size_type ae = ab;
+        for (; ae < text.size(); ++ae) {
+            if (text[ae] == '[') ++depth;
+            else if (text[ae] == ']') { if (--depth == 0) break; }
+        }
+        if (depth != 0) return std::nullopt;
+        const std::string arr = text.substr(ab, ae - ab + 1);
+        const auto name_start = arr.find("\"name\"");
+        const auto args_start = arr.find("\"arguments\"");
+        if (name_start == std::string::npos || args_start == std::string::npos)
+            return std::nullopt;
+        const auto nq1 = arr.find('"', name_start + 7);
+        const auto nq2 = arr.find('"', nq1 + 1);
+        if (nq1 == std::string::npos || nq2 == std::string::npos) return std::nullopt;
+        const auto obj_start = arr.find('{', args_start + 12);
+        if (obj_start == std::string::npos) return std::nullopt;
+        int d = 0; std::string::size_type obj_end = obj_start;
+        for (; obj_end < arr.size(); ++obj_end) {
+            if (arr[obj_end] == '{') ++d;
+            else if (arr[obj_end] == '}') { if (--d == 0) break; }
+        }
+        if (d != 0) return std::nullopt;
+        ToolCall tc;
+        tc.name           = arr.substr(nq1 + 1, nq2 - nq1 - 1);
+        tc.arguments_json = arr.substr(obj_start, obj_end - obj_start + 1);
+        return tc;
+    }
+
+    default:
+        return std::nullopt;
+    }
+}
+
+std::string LlamaModel::format_tool_result(const std::string& /*tool_name*/,
+                                            const std::string& result_json) const {
+    switch (tool_family_) {
+    case ToolFamily::Qwen25:
+        return "\n<tool_response>\n" + result_json + "\n</tool_response>\n";
+    case ToolFamily::Llama31:
+        return "<|start_header_id|>tool<|end_header_id|>\n\n" + result_json +
+               "<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n\n";
+    case ToolFamily::MistralTool:
+        return "[TOOL_RESULTS] " + result_json + " [/TOOL_RESULTS]";
+    default:
+        return "";
+    }
 }
 
 } // namespace compute

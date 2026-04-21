@@ -66,7 +66,8 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     const std::string& model_type = config_result->model_type;
 
-    if (model_type == "llama" || model_type == "mistral" || model_type == "qwen2") {
+    if (model_type == "llama" || model_type == "mistral" ||
+        model_type == "qwen2" || model_type == "qwen3") {
         auto result = LlamaModel::from_model_dir(model_dir, backend);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<LlamaModel>(std::move(*result));
@@ -80,7 +81,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     return std::unexpected(Error{ErrorCode::InvalidModel,
         "Unsupported model type: \"" + model_type +
-        "\". Supported: llama, mistral, qwen2, gemma, gemma2, gemma3_text"});
+        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text"});
 }
 
 } // namespace compute

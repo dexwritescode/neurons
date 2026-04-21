@@ -83,16 +83,25 @@ public:
     // Callback receives decoded token text. Return false to stop generation.
     using GenerateTokenCb = std::function<bool(const std::string& token)>;
 
+    // Called when a tool call is detected during generation.
+    // Return the tool result JSON string, or nullopt to deny the call.
+    using ToolCallCb = std::function<
+        std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
+
     // Run inference without going through gRPC. Builds the model-specific chat
     // prompt from req (same logic as the gRPC Generate RPC). Blocks until done
     // or cancelled.  cancelled — set from another thread to abort.
+    // tool_cb: optional — if provided and the model supports tool use, the
+    //   generate loop will detect tool calls, invoke this callback for each one,
+    //   inject the result, and continue generation (up to 5 tool turns).
     // Returns true on success.
     bool generate_internal(const neurons::GenerateRequest& req,
                            const std::atomic<bool>&        cancelled,
                            GenerateTokenCb                 cb,
                            std::string&                    error_out,
                            uint32_t*                       prompt_tokens_out = nullptr,
-                           uint32_t*                       gen_tokens_out    = nullptr);
+                           uint32_t*                       gen_tokens_out    = nullptr,
+                           ToolCallCb                      tool_cb           = nullptr);
 
     // Callback receives (bytes_done, bytes_total, speed_bps, current_file).
     // Return false to cancel.
