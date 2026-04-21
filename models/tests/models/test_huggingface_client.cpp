@@ -57,6 +57,12 @@ public:
         return nextResponse;
     }
 
+    http::HttpResponse requestSyncWithProgress(
+        const http::HttpRequest& request,
+        http::ProgressCallback /*progress*/) override {
+        return requestSync(request);
+    }
+
     void cancelAll() override {}
     bool cancelRequest(const std::string& url) override { (void)url; return false; }
 
