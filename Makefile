@@ -79,6 +79,14 @@ test-compute: _configure ## Build and run compute tests only
 	$(CMAKE_BUILD) --target compute_tests
 	ctest --test-dir $(BUILD_DIR) --output-on-failure -R "Compute|compute|Qwen|Llama|Mistral|Tokenizer|SIMD|BPE|Model"
 
+.PHONY: test-debug
+test-debug: ## Build + run all unit tests in Debug mode (mirrors CI exactly)
+	$(MAKE) _configure BUILD_TYPE=Debug BUILD_DIR=build-debug
+	cmake --build build-debug -j$(JOBS) --target all-tests
+	ctest --test-dir build-debug --output-on-failure \
+	      --label-exclude integration \
+	      --timeout 120
+
 .PHONY: flutter-test
 flutter-test: ## Run Flutter widget + unit tests
 	cd $(GUI_DIR) && flutter test
