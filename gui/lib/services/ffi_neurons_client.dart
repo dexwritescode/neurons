@@ -104,7 +104,9 @@ typedef _NeuronsGenerateNative = Int32 Function(
     Pointer<NativeFunction<_NeuronsTokenCbNative>> cb,
     Pointer<Void> userdata,
     Pointer<Char> err,
-    Int32 errLen);
+    Int32 errLen,
+    Pointer<Int32> promptTokensOut,
+    Pointer<Int32> genTokensOut);
 typedef _NeuronsGenerateDart = int Function(
     Pointer<NeuronsCoreOpaque> h,
     Pointer<Char> userPrompt,
@@ -118,7 +120,9 @@ typedef _NeuronsGenerateDart = int Function(
     Pointer<NativeFunction<_NeuronsTokenCbNative>> cb,
     Pointer<Void> userdata,
     Pointer<Char> err,
-    int errLen);
+    int errLen,
+    Pointer<Int32> promptTokensOut,
+    Pointer<Int32> genTokensOut);
 
 typedef _NeuronsDownloadCbNative = Int32 Function(
     Int64 bytesDone,
@@ -258,6 +262,8 @@ void _generateIsolate(_GenArgs args) {
     final promptPtr = args.userPrompt.toNativeUtf8(allocator: arena).cast<Char>();
     final histPtr = args.historyJson.toNativeUtf8(allocator: arena).cast<Char>();
     final errBuf = arena<Char>(512);
+    final promptTokensPtr = arena<Int32>()..value = 0;
+    final genTokensPtr    = arena<Int32>()..value = 0;
 
     generateFn(
       core,
@@ -273,11 +279,18 @@ void _generateIsolate(_GenArgs args) {
       nullptr,
       errBuf,
       512,
+      promptTokensPtr,
+      genTokensPtr,
     );
 
     final errStr = errBuf.cast<Utf8>().toDartString();
     if (errStr.isNotEmpty) {
       args.sendPort.send({'error': errStr});
+    } else {
+      args.sendPort.send({
+        'promptTokens': promptTokensPtr.value,
+        'genTokens': genTokensPtr.value,
+      });
     }
   });
 
@@ -508,6 +521,11 @@ class FfiNeuronsClient implements NeuronsClient {
         ctrl.addError(Exception(msg['error'] as String));
         ctrl.close();
         port.close();
+      } else if (msg is Map && msg['promptTokens'] != null) {
+        ctrl.add(GenerateResponse()
+          ..done = true
+          ..promptTokens = msg['promptTokens'] as int
+          ..genTokens = msg['genTokens'] as int);
       }
     });
 

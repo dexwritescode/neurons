@@ -160,10 +160,14 @@ class AppState extends ChangeNotifier {
 
   /// Load token from Keychain and push to local FFI client on startup.
   Future<void> _initHfToken() async {
-    final token = await _tokenRepo.loadHfToken();
-    if (token != null && token.isNotEmpty) {
-      hfToken = token;
-      await _client.setHfToken(token);
+    try {
+      final token = await _tokenRepo.loadHfToken();
+      if (token != null && token.isNotEmpty) {
+        hfToken = token;
+        await _client.setHfToken(token);
+      }
+    } catch (_) {
+      // Keychain unavailable (e.g. unit test environment) — proceed without token.
     }
   }
 
@@ -303,6 +307,7 @@ class AppState extends ChangeNotifier {
     generationError = null;
     lastPromptTokens = 0;
     lastGenTokens = 0;
+    liveGenTokens = 0;
     _clearUndo();
     notifyListeners();
   }
@@ -317,6 +322,7 @@ class AppState extends ChangeNotifier {
     generationError = null;
     lastPromptTokens = 0;
     lastGenTokens = 0;
+    liveGenTokens = 0;
     _clearUndo();
     notifyListeners();
   }
@@ -336,6 +342,7 @@ class AppState extends ChangeNotifier {
       generationError = null;
       lastPromptTokens = 0;
       lastGenTokens = 0;
+    liveGenTokens = 0;
       _clearUndo();
     }
     notifyListeners();
@@ -388,6 +395,7 @@ class AppState extends ChangeNotifier {
   // ── Chat generation state ─────────────────────────────────────────────────
   bool isGenerating = false;
   String? generationError;
+  int liveGenTokens = 0;   // increments per token during streaming
   int lastPromptTokens = 0;
   int lastGenTokens = 0;
 
@@ -630,6 +638,7 @@ class AppState extends ChangeNotifier {
     messages.add(assistantMsg);
     isGenerating = true;
     generationError = null;
+    liveGenTokens = 0;
     notifyListeners();
 
     try {
@@ -650,8 +659,10 @@ class AppState extends ChangeNotifier {
             lastPromptTokens = resp.promptTokens.toInt();
             lastGenTokens    = resp.genTokens.toInt();
             if (resp.error.isNotEmpty) generationError = resp.error;
+            notifyListeners();
           } else {
             assistantMsg.content += resp.token;
+            liveGenTokens++;
             notifyListeners();
           }
         },
@@ -691,6 +702,7 @@ class AppState extends ChangeNotifier {
     generationError = null;
     lastPromptTokens = 0;
     lastGenTokens = 0;
+    liveGenTokens = 0;
     notifyListeners();
     // Remove the now-empty session file from disk.
     _chatRepo.delete(_activeSession.id);

@@ -153,7 +153,9 @@ int neurons_generate(NeuronsCore*   h,
                      float          rep_penalty,
                      NeuronsTokenCb cb,
                      void*          userdata,
-                     char* err, int err_len) {
+                     char* err, int err_len,
+                     int*  prompt_tokens_out,
+                     int*  gen_tokens_out) {
     if (!h || !user_prompt || !cb) { write_err("null argument", err, err_len); return -1; }
 
     h->cancel_generate.store(false, std::memory_order_relaxed);
@@ -192,11 +194,15 @@ int neurons_generate(NeuronsCore*   h,
     if (rep_penalty > 0)     p->set_rep_penalty(rep_penalty);
 
     std::string error;
+    uint32_t pt = 0, gt = 0;
     bool ok = h->service->generate_internal(req, h->cancel_generate,
         [cb, userdata](const std::string& token) -> bool {
             return cb(token.c_str(), userdata) == 0;
         },
-        error);
+        error, &pt, &gt);
+
+    if (prompt_tokens_out) *prompt_tokens_out = static_cast<int>(pt);
+    if (gen_tokens_out)    *gen_tokens_out    = static_cast<int>(gt);
 
     if (!ok && !error.empty()) {
         write_err(error, err, err_len);

@@ -65,7 +65,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final state = context.watch<AppState>();
 
     if (state.isGenerating && !_prevGenerating) {
-      _genStartTime = DateTime.now();
+      _genStartTime = null; // reset; will be set on first token
+    }
+    if (state.isGenerating && state.liveGenTokens == 1 && _genStartTime == null) {
+      _genStartTime = DateTime.now(); // start timer on first token, not on prefill start
     }
     _prevGenerating = state.isGenerating;
 
@@ -130,10 +133,12 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
               ),
               // Token stats bar
-              if (state.lastGenTokens > 0 || state.isGenerating)
+              if (state.isGenerating || state.lastGenTokens > 0)
                 TokenStatsBar(
                   promptTokens: state.lastPromptTokens,
-                  genTokens: state.lastGenTokens,
+                  genTokens: state.isGenerating
+                      ? state.liveGenTokens
+                      : state.lastGenTokens,
                   isGenerating: state.isGenerating,
                   genStartTime: _genStartTime,
                 ),

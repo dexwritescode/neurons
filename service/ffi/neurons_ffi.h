@@ -79,7 +79,9 @@ int  neurons_generate(NeuronsCore*   h,
                       float          rep_penalty,
                       NeuronsTokenCb cb,
                       void*          userdata,
-                      char* err, int err_len);
+                      char* err, int err_len,
+                      int*  prompt_tokens_out,
+                      int*  gen_tokens_out);
 
 /// Signal a running neurons_generate() to stop after the current token.
 /// Safe to call from any thread.
