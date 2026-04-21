@@ -393,7 +393,9 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-			);
+					"$(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/libneurons_core.dylib",
+					"$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libneurons_core.dylib",
+				);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\nDYLIB=\"$SRCROOT/neurons_core_lib/lib/libneurons_core.dylib\"\nif [ -f \"$DYLIB\" ]; then\n  cp \"$DYLIB\" \"$BUILT_PRODUCTS_DIR/$EXECUTABLE_FOLDER_PATH/libneurons_core.dylib\"\n  mkdir -p \"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\n  cp \"$DYLIB\" \"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH/libneurons_core.dylib\"\n  echo \"Copied libneurons_core.dylib to MacOS/ and Frameworks/\"\nelse\n  echo \"warning: libneurons_core.dylib not staged -- run ./scripts/build_service_macos.sh first\"\nfi\n";
