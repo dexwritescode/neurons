@@ -90,7 +90,9 @@ public:
     bool generate_internal(const neurons::GenerateRequest& req,
                            const std::atomic<bool>&        cancelled,
                            GenerateTokenCb                 cb,
-                           std::string&                    error_out);
+                           std::string&                    error_out,
+                           uint32_t*                       prompt_tokens_out = nullptr,
+                           uint32_t*                       gen_tokens_out    = nullptr);
 
     // Callback receives (bytes_done, bytes_total, speed_bps, current_file).
     // Return false to cancel.

@@ -19,7 +19,10 @@ import 'package:neurons_gui/widgets/animated_dots.dart';
 mixin _NoBrowserMixin implements NeuronsClient {
   @override
   Future<SearchModelsResponse> searchModels(String query,
-          {int limit = 30}) async =>
+          {int limit = 30,
+          String sort = 'downloads',
+          List<String> pipelineTags = const [],
+          String author = ''}) async =>
       proto.SearchModelsResponse();
 
   @override
@@ -32,6 +35,15 @@ mixin _NoBrowserMixin implements NeuronsClient {
   @override
   Future<CancelDownloadResponse> cancelDownload(String downloadId) async =>
       proto.CancelDownloadResponse();
+
+  @override
+  Future<bool> deleteModel(String modelPath) async => true;
+
+  @override
+  Future<void> setHfToken(String token) async {}
+
+  @override
+  Stream<LogEntry> streamLogs({String minLevel = 'INFO'}) async* {}
 }
 
 /// Minimal stub — all methods return empty successful responses.
@@ -94,7 +106,10 @@ class _HistoryCapturingClient with _NoBrowserMixin implements NeuronsClient {
   }) async* {
     capturedHistories.add(List.of(history));
     yield proto.GenerateResponse()..token = replyToken;
-    yield proto.GenerateResponse()..done = true;
+    yield proto.GenerateResponse()
+      ..done = true
+      ..promptTokens = 10
+      ..genTokens = 1;
   }
 
   @override
@@ -220,7 +235,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
         value: state,
-        child: const MaterialApp(home: ModelBrowserScreen()),
+        child: const MaterialApp(home: Scaffold(body: ModelBrowserScreen())),
       ),
     );
     expect(find.text('Select a model to see details'), findsOneWidget);
@@ -243,7 +258,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
         value: state,
-        child: const MaterialApp(home: ModelBrowserScreen()),
+        child: const MaterialApp(home: Scaffold(body: ModelBrowserScreen())),
       ),
     );
 
@@ -255,6 +270,45 @@ void main() {
     expect(find.text('test/Mistral'), findsOneWidget);
     expect(find.text('↓ 42K'), findsOneWidget);
     expect(find.text('↓ 1.5M'), findsOneWidget);
+  });
+
+  test('AppState.send() populates lastPromptTokens and lastGenTokens on completion',
+      () async {
+    final client = _HistoryCapturingClient(replyToken: 'Hi');
+    final state = AppState(client);
+
+    await state.send('Hello');
+
+    expect(state.lastPromptTokens, 10);
+    expect(state.lastGenTokens, 1);
+    expect(state.isGenerating, isFalse);
+  });
+
+  test('AppState.send() increments liveGenTokens during streaming', () async {
+    StreamController<proto.GenerateResponse>? ctrl;
+    final client = _StreamControllerClient(onGenerate: (c) => ctrl = c);
+    final state = AppState(client);
+
+    final sendFuture = state.send('Hello');
+    await Future.microtask(() {});
+
+    // Emit a few tokens and verify liveGenTokens tracks them.
+    ctrl!.add(proto.GenerateResponse()..token = 'a');
+    await Future.microtask(() {});
+    expect(state.liveGenTokens, 1);
+
+    ctrl!.add(proto.GenerateResponse()..token = 'b');
+    await Future.microtask(() {});
+    expect(state.liveGenTokens, 2);
+
+    // Complete generation.
+    ctrl!.add(proto.GenerateResponse()..done = true..promptTokens = 5..genTokens = 2);
+    ctrl!.close();
+    await sendFuture;
+
+    expect(state.isGenerating, isFalse);
+    expect(state.lastPromptTokens, 5);
+    expect(state.lastGenTokens, 2);
   });
 
   testWidgets('ModelBrowserScreen shows detail pane after selecting model',
@@ -278,7 +332,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
         value: state,
-        child: const MaterialApp(home: ModelBrowserScreen()),
+        child: const MaterialApp(home: Scaffold(body: ModelBrowserScreen())),
       ),
     );
 
@@ -330,7 +384,10 @@ class _BrowserFakeClient with _NoBrowserMixin implements NeuronsClient {
 
   @override
   Future<SearchModelsResponse> searchModels(String query,
-          {int limit = 30}) async =>
+          {int limit = 30,
+          String sort = 'downloads',
+          List<String> pipelineTags = const [],
+          String author = ''}) async =>
       searchResult ?? proto.SearchModelsResponse();
 
   @override

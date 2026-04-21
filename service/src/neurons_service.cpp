@@ -685,7 +685,9 @@ grpc::Status NeuronsServiceImpl::SetHfToken(grpc::ServerContext* /*ctx*/,
 bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
                                             const std::atomic<bool>&        cancelled,
                                             GenerateTokenCb                 cb,
-                                            std::string&                    error_out) {
+                                            std::string&                    error_out,
+                                            uint32_t*                       prompt_tokens_out,
+                                            uint32_t*                       gen_tokens_out) {
     compute::LanguageModel* mdl = nullptr;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
@@ -732,6 +734,8 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
         error_out = "Generation failed: " + result.error().message;
         return false;
     }
+    if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(token_ids.size());
+    if (gen_tokens_out)    *gen_tokens_out    = static_cast<uint32_t>(gen_so_far.size());
     return true;
 }
 
