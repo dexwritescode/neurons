@@ -37,6 +37,16 @@ The GUI never links C++ directly. Locally it calls `libneurons_core.dylib` over 
 
 ---
 
+## Screenshots
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/03d247c4-c8ba-4dd9-958d-4786a0d4f593" width="32%" />
+  <img src="https://github.com/user-attachments/assets/8858675a-c34e-48e9-816a-872612be1794" width="32%" />
+  <img src="https://github.com/user-attachments/assets/0084a5d8-cdbb-44c2-a177-fc5e13d80837" width="32%" />
+</div>
+
+---
+
 ## Supported models
 
 | Family | Example repos | Backend |
