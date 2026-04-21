@@ -105,6 +105,7 @@ grpc::Status NeuronsServiceImpl::LoadModel(grpc::ServerContext* /*ctx*/,
     resp->set_vocab_size(static_cast<uint32_t>(model_->config().vocab_size));
     resp->set_num_layers(static_cast<uint32_t>(model_->config().num_hidden_layers));
     resp->set_max_position_embeddings(static_cast<uint32_t>(model_->config().max_position_embeddings));
+    resp->set_supports_tool_use(model_->supports_tool_use());
     return grpc::Status::OK;
 }
 
@@ -153,6 +154,7 @@ grpc::Status NeuronsServiceImpl::GetStatus(grpc::ServerContext* /*ctx*/,
         resp->set_num_layers(static_cast<uint32_t>(model_->config().num_hidden_layers));
         resp->set_max_position_embeddings(static_cast<uint32_t>(model_->config().max_position_embeddings));
         resp->set_backend(backend_name);
+        resp->set_supports_tool_use(model_->supports_tool_use());
     }
 
     // Always populate one GpuSlot (the single backend device on this node)

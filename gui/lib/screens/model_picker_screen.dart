@@ -181,12 +181,15 @@ class _ModelPickerScreenState extends State<ModelPickerScreen> {
                         itemCount: models.length,
                         itemBuilder: (_, i) {
                           final m = models[i];
+                          final loaded = state.modelPath == m.path;
                           return _ModelRow(
                             name: m.name,
                             path: m.path,
                             sizeBytes: m.sizeBytes,
                             isSelected: _selectedPath == m.path,
-                            isLoaded: state.modelPath == m.path,
+                            isLoaded: loaded,
+                            modelType: loaded ? (state.modelType ?? '') : '',
+                            supportsToolUse: loaded ? state.supportsToolUse : null,
                             onTap: () => _selectModel(state, m.path),
                           );
                         },
@@ -242,6 +245,8 @@ class _ModelRow extends StatelessWidget {
     required this.isSelected,
     required this.isLoaded,
     required this.onTap,
+    this.modelType = '',
+    this.supportsToolUse,
   });
 
   final String name;
@@ -250,6 +255,9 @@ class _ModelRow extends StatelessWidget {
   final bool isSelected;
   final bool isLoaded;
   final VoidCallback onTap;
+  final String modelType;
+  // null = not loaded (use heuristic); non-null = authoritative from C++
+  final bool? supportsToolUse;
 
   String _fmtSize(Int64 b) {
     final v = b.toInt();
@@ -260,7 +268,12 @@ class _ModelRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final caps = _inferCapabilities(name, '');
+    var caps = _inferCapabilities(name, modelType);
+    // After load, C++ is authoritative — override the heuristic.
+    if (supportsToolUse != null) {
+      caps = List.of(caps)..remove(ModelCap.toolUse);
+      if (supportsToolUse!) caps.add(ModelCap.toolUse);
+    }
     return AnimatedContainer(
       duration: Tokens.normal,
       curve: Tokens.curve,

@@ -55,6 +55,7 @@ message LoadModelResponse {
   uint32 vocab_size             = 4;
   uint32 num_layers             = 5;
   uint32 max_position_embeddings = 6;  // Model's maximum context length in tokens
+  bool   supports_tool_use      = 7;  // True if the model supports function/tool calling
 }
 
 // ── UnloadModel ──────────────────────────────────────────────────────────────
@@ -126,6 +127,7 @@ message StatusResponse {
   uint32 max_position_embeddings  = 7;  // Model's maximum context length in tokens
   repeated GpuSlot gpus           = 8;  // One entry per GPU/device on this node
   uint32 http_port                = 9;  // OpenAI HTTP server port; 0 if not running
+  bool   supports_tool_use        = 10; // True if the loaded model supports function/tool calling
 }
 
 // ── ListModels ───────────────────────────────────────────────────────────────
