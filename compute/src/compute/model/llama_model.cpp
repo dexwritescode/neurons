@@ -234,6 +234,32 @@ Result<Tensor> LlamaModel::attention_layer(
     auto vt = backend_->swapaxes(*v3, 0, 1);
     if (!vt) return std::unexpected(vt.error());
 
+    // ── Optional per-head QK normalization (Qwen3) ───────────────────────────
+    // Qwen3 adds learned RMSNorm per head-dimension before RoPE. Weights are
+    // absent in Qwen2/Llama/Mistral, so probing is a no-op for those families.
+    {
+        auto it = weights_.find(prefix + "q_norm.weight");
+        if (it != weights_.end()) {
+            auto flat = backend_->reshape(*qt, {n_heads * seq_len, head_dim});
+            if (!flat) return std::unexpected(flat.error());
+            auto normed = backend_->rms_norm(*flat, it->second, config_.rms_norm_eps);
+            if (!normed) return std::unexpected(normed.error());
+            qt = backend_->reshape(*normed, {n_heads, seq_len, head_dim});
+            if (!qt) return std::unexpected(qt.error());
+        }
+    }
+    {
+        auto it = weights_.find(prefix + "k_norm.weight");
+        if (it != weights_.end()) {
+            auto flat = backend_->reshape(*kt, {n_kv_heads * seq_len, head_dim});
+            if (!flat) return std::unexpected(flat.error());
+            auto normed = backend_->rms_norm(*flat, it->second, config_.rms_norm_eps);
+            if (!normed) return std::unexpected(normed.error());
+            kt = backend_->reshape(*normed, {n_kv_heads, seq_len, head_dim});
+            if (!kt) return std::unexpected(kt.error());
+        }
+    }
+
     // ── RoPE ──────────────────────────────────────────────────────────────────
     auto q_rope = backend_->rope(*qt, head_dim, config_.rope_theta, position_offset);
     if (!q_rope) return std::unexpected(q_rope.error());
