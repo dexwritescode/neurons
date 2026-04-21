@@ -10,6 +10,7 @@
 #include "cli/commands/node_command.h"
 #include "cli/commands/chat_command.h"
 #include "cli/commands/server_command.h"
+#include "cli/commands/mcp_command.h"
 #include "cli/config/neurons_config.h"
 
 int main(int argc, char** argv) {
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
     app.add_command(std::make_unique<neurons::cli::NodeCommand>(config.get()));
     app.add_command(std::make_unique<neurons::cli::ChatCommand>(config.get()));
     app.add_command(std::make_unique<neurons::cli::ServerCommand>(config.get()));
+    app.add_command(std::make_unique<neurons::cli::McpCommand>(config.get()));
 
     app.setup();
     return app.run(argc, argv);

@@ -5,6 +5,7 @@
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
 #include "models/api/huggingface_client.h"
+#include "mcp/mcp_manager.h"
 
 #include <grpcpp/grpcpp.h>
 #include <atomic>
@@ -116,9 +117,13 @@ public:
     // Called by the server binary to report the HTTP port for GetStatus.
     void set_http_port(int port) { http_port_ = port; }
 
+    // Direct access to the MCP manager (for main.cpp startup and tests).
+    McpManager& mcp_manager() { return mcp_manager_; }
+
 private:
     std::string models_dir_;
     int         http_port_{0};
+    McpManager  mcp_manager_;
 
     // HuggingFace client for model search and download
     std::unique_ptr<models::HuggingFaceClientSync> hf_client_;
