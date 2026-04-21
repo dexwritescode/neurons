@@ -18,8 +18,8 @@ protected:
         model_dir    = TINYLLAMA_MODEL_DIR;
         baseline_dir = std::filesystem::path(TEST_RESOURCES_DIR).parent_path() / "baselines" / "output";
 
-        ASSERT_TRUE(std::filesystem::exists(model_dir))
-            << "Model directory not found: " << model_dir;
+        if (!std::filesystem::exists(model_dir))
+            GTEST_SKIP() << "Model not found: " << model_dir;
 
         auto backend_result = BackendFactory::create(BackendType::MLX);
         ASSERT_TRUE(backend_result.has_value()) << backend_result.error().message;

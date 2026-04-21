@@ -16,17 +16,17 @@ protected:
 };
 
 TEST_F(SimpleBpeTokenizerTest, LoadTokenizerFromModelDir) {
-    ASSERT_TRUE(std::filesystem::exists(tinyllama_model_dir))
-        << "TinyLlama model directory not found: " << tinyllama_model_dir;
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
 
     // Verify required files exist
     auto tokenizer_json = tinyllama_model_dir / "tokenizer.json";
     auto tokenizer_config_json = tinyllama_model_dir / "tokenizer_config.json";
 
-    ASSERT_TRUE(std::filesystem::exists(tokenizer_json))
-        << "tokenizer.json not found: " << tokenizer_json;
-    ASSERT_TRUE(std::filesystem::exists(tokenizer_config_json))
-        << "tokenizer_config.json not found: " << tokenizer_config_json;
+    if (!std::filesystem::exists(tokenizer_json))
+        GTEST_SKIP() << "tokenizer.json not found: " << tokenizer_json;
+    if (!std::filesystem::exists(tokenizer_config_json))
+        GTEST_SKIP() << "tokenizer_config.json not found: " << tokenizer_config_json;
 
     // Load tokenizer
     auto result = SimpleBpeTokenizer::from_model_dir(tinyllama_model_dir);
