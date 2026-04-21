@@ -1,5 +1,6 @@
 # Neurons
 
+[![CI](https://github.com/dexwritescode/neurons/actions/workflows/ci.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A from-scratch LLM inference engine and chat application. Built to understand how large language models actually work at the hardware level — using Metal/MLX, cuBLAS, and flash-attention directly rather than wrapping llama.cpp or Ollama.
