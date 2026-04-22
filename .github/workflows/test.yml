@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  workflow_run:
+    workflows: [ "Build" ]
+    types: [ completed ]
+
+concurrency:
+  group: test-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install gRPC + Protobuf
+        run: brew install grpc
+
+      - name: Download test binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: test-binaries-${{ github.event.workflow_run.head_sha }}
+          path: build-bins/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make binaries executable
+        run: chmod +x build-bins/compute/compute_tests build-bins/service/service_tests build-bins/models/model_tests
+
+      - name: C++ unit tests
+        run: |
+          build-bins/compute/compute_tests --gtest_filter=-*Integration* --gtest_output=xml:/tmp/compute_results.xml
+          build-bins/service/service_tests --gtest_output=xml:/tmp/service_results.xml
+          build-bins/models/model_tests --gtest_filter=-*Integration* --gtest_output=xml:/tmp/models_results.xml

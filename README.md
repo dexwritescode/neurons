@@ -1,6 +1,8 @@
 # Neurons
 
-[![CI](https://github.com/dexwritescode/neurons/actions/workflows/ci.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/ci.yml)
+[![Build](https://github.com/dexwritescode/neurons/actions/workflows/build.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/build.yml)
+[![Test](https://github.com/dexwritescode/neurons/actions/workflows/test.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/test.yml)
+[![GUI Test](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A from-scratch LLM inference engine and chat application. Built to understand how large language models actually work at the hardware level — using Metal/MLX, cuBLAS, and flash-attention directly rather than wrapping llama.cpp or Ollama.
@@ -35,6 +37,9 @@ The GUI never links C++ directly. Locally it calls `libneurons_core.dylib` over 
 | Multi-node management | ✅ | ✅ | — |
 | OpenAI-compatible HTTP endpoint | — | ✅ | — |
 | Remote log streaming | ✅ | — | ✅ |
+| MCP server management (add/remove/list/push) | 🚧 | 🚧 | ✅ |
+| MCP permission rules (global/session/chat scopes) | 🚧 | 🚧 | ✅ |
+| MCP tool approval flow (always_ask / always_allow / always_deny) | 🚧 | 🚧 | ✅ |
 
 ---
 
@@ -234,7 +239,10 @@ Neurons/
 | G–I | ✅ | gRPC service, Flutter GUI, CLI, OpenAI HTTP, logging |
 | J | 🚧 | File attach + RAG (embeddings, sqlite-vec) |
 | K | 🚧 | Multi-node: routing, speculative decoding, failover |
-| L | 🚧 | MCP client + tool use (filesystem, shell, custom servers) |
+| L.1–2 | ✅ | MCP client runtime — stdio/SSE transport, JSON-RPC 2.0, McpManager |
+| L.3 | ✅ | MCP gRPC extensions — server/permission RPCs, tool approval flow |
+| L.4–6 | 🚧 | MCP GUI — settings, permissions table, live approval prompt |
+| L.8 | 🚧 | Built-in MCP servers (filesystem, shell) |
 | B/C | 🚧 | CUDA (cuBLAS + flash-attention) and ROCm backends |
 
 ---
