@@ -37,10 +37,14 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
-        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+        run: cmake --build build --target all-tests -j$(sysctl -n hw.logicalcpu)
 
-      - name: Cache build artifacts
-        uses: actions/cache/save@v4
+      - name: Upload test binaries
+        uses: actions/upload-artifact@v4
         with:
-          path: build
-          key: build-artifacts-${{ github.sha }}
+          name: test-binaries-${{ github.sha }}
+          path: |
+            build/compute/compute_tests
+            build/service/service_tests
+            build/models/model_tests
+          retention-days: 1

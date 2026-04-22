@@ -1,0 +1,28 @@
+name: GUI Test
+
+on:
+  workflow_run:
+    workflows: [ "Build" ]
+    types: [ completed ]
+
+concurrency:
+  group: gui-test-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  gui-test:
+    runs-on: macos-26
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: GUI tests
+        run: cd gui && flutter test

@@ -2,6 +2,7 @@
 
 [![Build](https://github.com/dexwritescode/neurons/actions/workflows/build.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/build.yml)
 [![Test](https://github.com/dexwritescode/neurons/actions/workflows/test.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/test.yml)
+[![GUI Test](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A from-scratch LLM inference engine and chat application. Built to understand how large language models actually work at the hardware level — using Metal/MLX, cuBLAS, and flash-attention directly rather than wrapping llama.cpp or Ollama.
