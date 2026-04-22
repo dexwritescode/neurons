@@ -1,4 +1,4 @@
-name: CI
+name: Test
 
 on:
   push:
@@ -12,9 +12,13 @@ on:
       - '**.md'
       - 'docs/**'
 
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: macos-26   # arm64 Apple Silicon — required for MLX Metal backend
+  test:
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v4
@@ -22,8 +26,6 @@ jobs:
       - name: Install gRPC + Protobuf
         run: brew install grpc
 
-      # Cache the CMake FetchContent downloads (MLX, cli11, nlohmann-json, etc.)
-      # Key includes the CMakeLists hash so the cache busts when deps change.
       - name: Cache CMake dependencies
         uses: actions/cache@v4
         with:
@@ -34,15 +36,16 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 
-      - name: Build
-        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
+      - name: Build test targets
+        run: cmake --build build --target all-tests -j$(sysctl -n hw.logicalcpu)
 
-      - name: Unit tests
-        # Skip integration tests — they need model files from ~/.neurons/models/.
-        # The GTEST_SKIP guards in each integration test handle absent models gracefully,
-        # but ctest's --label-exclude is cleaner.
+      - name: C++ unit tests
         run: |
-          cmake --build build --target all-tests -j$(sysctl -n hw.logicalcpu)
           ctest --test-dir build --output-on-failure \
                 --label-exclude integration \
                 --timeout 120
+
+      - name: Flutter tests
+        run: |
+          cd gui
+          flutter test
