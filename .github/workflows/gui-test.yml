@@ -24,5 +24,14 @@ jobs:
         with:
           channel: stable
 
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Install protoc-gen-dart
+        run: dart pub global activate protoc_plugin
+
+      - name: Generate Dart proto stubs
+        run: bash scripts/gen_proto.sh
+
       - name: GUI tests
         run: cd gui && flutter test
