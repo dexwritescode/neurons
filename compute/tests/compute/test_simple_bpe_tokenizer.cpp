@@ -52,6 +52,8 @@ TEST_F(SimpleBpeTokenizerTest, LoadTokenizerFromModelDir) {
 }
 
 TEST_F(SimpleBpeTokenizerTest, BasicEncodingDecoding) {
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
     auto result = SimpleBpeTokenizer::from_model_dir(tinyllama_model_dir);
     ASSERT_TRUE(result.has_value()) << "Failed to load tokenizer";
 
@@ -90,6 +92,8 @@ TEST_F(SimpleBpeTokenizerTest, BasicEncodingDecoding) {
 }
 
 TEST_F(SimpleBpeTokenizerTest, SpecialTokenHandling) {
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
     auto result = SimpleBpeTokenizer::from_model_dir(tinyllama_model_dir);
     ASSERT_TRUE(result.has_value()) << "Failed to load tokenizer";
 
@@ -111,6 +115,8 @@ TEST_F(SimpleBpeTokenizerTest, SpecialTokenHandling) {
 }
 
 TEST_F(SimpleBpeTokenizerTest, PreTokenization) {
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
     auto result = SimpleBpeTokenizer::from_model_dir(tinyllama_model_dir);
     ASSERT_TRUE(result.has_value()) << "Failed to load tokenizer";
 
@@ -140,6 +146,8 @@ TEST_F(SimpleBpeTokenizerTest, PreTokenization) {
 }
 
 TEST_F(SimpleBpeTokenizerTest, ChatTemplate) {
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
     auto result = SimpleBpeTokenizer::from_model_dir(tinyllama_model_dir);
     ASSERT_TRUE(result.has_value()) << "Failed to load tokenizer";
 
