@@ -706,6 +706,52 @@ class FfiNeuronsClient implements NeuronsClient {
       GrpcNeuronsClient(host: 'localhost', port: 50051)
           .streamLogs(minLevel: minLevel);
 
+  // ── Tool approval ─────────────────────────────────────────────────────────
+
+  @override
+  Future<ToolApprovalResult> respondToolApproval(
+    String approvalId,
+    bool approved, {
+    String newPermission = '',
+  }) =>
+      throw UnimplementedError('respondToolApproval not supported over FFI');
+
+  // ── MCP server management ──────────────────────────────────────────────────
+
+  @override
+  Future<ListMcpServersResponse> listMcpServers() =>
+      throw UnimplementedError('listMcpServers not supported over FFI');
+
+  @override
+  Future<AddMcpServerResponse> addMcpServer(McpServerConfig server) =>
+      throw UnimplementedError('addMcpServer not supported over FFI');
+
+  @override
+  Future<RemoveMcpServerResponse> removeMcpServer(String name) =>
+      throw UnimplementedError('removeMcpServer not supported over FFI');
+
+  @override
+  Future<PushMcpServersResponse> pushMcpServers(List<McpServerConfig> servers) =>
+      throw UnimplementedError('pushMcpServers not supported over FFI');
+
+  // ── MCP permission management ──────────────────────────────────────────────
+
+  @override
+  Future<ListPermissionRulesResponse> listPermissionRules({String scope = ''}) =>
+      throw UnimplementedError('listPermissionRules not supported over FFI');
+
+  @override
+  Future<SetPermissionRuleResponse> setPermissionRule(PermissionRule rule) =>
+      throw UnimplementedError('setPermissionRule not supported over FFI');
+
+  @override
+  Future<DeletePermissionRuleResponse> deletePermissionRule(
+    String server,
+    String tool,
+    String scope,
+  ) =>
+      throw UnimplementedError('deletePermissionRule not supported over FFI');
+
   /// Cancel an in-progress generation.
   void cancelGeneration() {
     final cancelFn = _lib.lookupFunction<_NeuronsVoidCoreNative,

@@ -1,9 +1,10 @@
 #include "mcp_manager.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <fnmatch.h>   // POSIX glob matching
 
 namespace fs = std::filesystem;
 
@@ -16,21 +17,9 @@ static std::string default_config_dir() {
     return home ? std::string(home) + "/.neurons" : ".neurons";
 }
 
-static std::string perm_to_string(McpPermission p) {
-    switch (p) {
-    case McpPermission::AlwaysAsk:    return "always_ask";
-    case McpPermission::AllowSession: return "allow_session";
-    case McpPermission::AlwaysAllow:  return "always_allow";
-    case McpPermission::AlwaysDeny:   return "always_deny";
-    }
-    return "always_ask";
-}
-
-static McpPermission perm_from_string(const std::string& s) {
-    if (s == "allow_session") return McpPermission::AllowSession;
-    if (s == "always_allow")  return McpPermission::AlwaysAllow;
-    if (s == "always_deny")   return McpPermission::AlwaysDeny;
-    return McpPermission::AlwaysAsk;
+static bool glob_match(const std::string& pattern, const std::string& value) {
+    if (pattern == "*") return true;
+    return fnmatch(pattern.c_str(), value.c_str(), FNM_PATHNAME) == 0;
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -51,7 +40,7 @@ void McpManager::load_config() {
     server_configs_.clear();
 
     std::ifstream f(servers_path());
-    if (!f.is_open()) return;  // file doesn't exist yet — start empty
+    if (!f.is_open()) return;
 
     try {
         auto j = nlohmann::json::parse(f);
@@ -97,7 +86,6 @@ void McpManager::save_config() const {
 
 void McpManager::add_server(const McpServerConfig& cfg) {
     std::lock_guard lock(mutex_);
-    // Replace if name already exists
     for (auto& existing : server_configs_) {
         if (existing.name == cfg.name) { existing = cfg; return; }
     }
@@ -111,7 +99,8 @@ bool McpManager::remove_server(const std::string& name) {
         std::remove_if(server_configs_.begin(), server_configs_.end(),
                        [&](const McpServerConfig& c) { return c.name == name; }),
         server_configs_.end());
-    disconnect_server(name);
+    clients_.erase(name);
+    rebuild_tool_map_locked();
     return server_configs_.size() < before;
 }
 
@@ -120,34 +109,43 @@ std::vector<McpServerConfig> McpManager::list_servers() const {
     return server_configs_;
 }
 
+void McpManager::push_servers(const std::vector<McpServerConfig>& servers) {
+    std::lock_guard lock(mutex_);
+    server_configs_ = servers;
+    // Disconnect any clients no longer in the list
+    std::unordered_map<std::string, std::unique_ptr<McpClient>> kept;
+    for (auto& cfg : server_configs_) {
+        auto it = clients_.find(cfg.name);
+        if (it != clients_.end()) kept[cfg.name] = std::move(it->second);
+    }
+    clients_ = std::move(kept);
+    rebuild_tool_map_locked();
+}
+
 // ── Connection management ─────────────────────────────────────────────────────
 
 void McpManager::connect_enabled() {
     std::vector<std::string> to_connect;
     {
         std::lock_guard lock(mutex_);
-        for (const auto& cfg : server_configs_) {
-            if (cfg.enabled && clients_.find(cfg.name) == clients_.end()) {
+        for (const auto& cfg : server_configs_)
+            if (cfg.enabled && !clients_.count(cfg.name))
                 to_connect.push_back(cfg.name);
-            }
-        }
     }
     for (const auto& name : to_connect) connect_server(name);
 }
 
 std::string McpManager::connect_server(const std::string& name) {
     std::lock_guard lock(mutex_);
-
-    if (clients_.count(name)) return "";  // already connected
+    if (clients_.count(name)) return "";
 
     const McpServerConfig* cfg = nullptr;
-    for (const auto& c : server_configs_) {
+    for (const auto& c : server_configs_)
         if (c.name == name) { cfg = &c; break; }
-    }
     if (!cfg) return "Server \"" + name + "\" not found in config";
 
     auto client = McpClient::create(*cfg);
-    auto err = client->connect();
+    auto err    = client->connect();
     if (!err.empty()) return err;
 
     clients_[name] = std::move(client);
@@ -156,7 +154,6 @@ std::string McpManager::connect_server(const std::string& name) {
 }
 
 void McpManager::disconnect_server(const std::string& name) {
-    // Called both under lock and without — caller must hold mutex_ or pass via remove_server.
     clients_.erase(name);
     rebuild_tool_map_locked();
 }
@@ -181,9 +178,7 @@ void McpManager::rebuild_tool_map_locked() {
 std::vector<ToolDef> McpManager::list_tools() {
     std::lock_guard lock(mutex_);
     std::vector<ToolDef> all;
-    for (auto& [name, client] : clients_) {
-        client->list_tools(all);
-    }
+    for (auto& [name, client] : clients_) client->list_tools(all);
     return all;
 }
 
@@ -209,101 +204,215 @@ bool McpManager::has_active_tools() const {
     return !clients_.empty();
 }
 
-// ── Permissions ───────────────────────────────────────────────────────────────
+// ── Permission rules ──────────────────────────────────────────────────────────
 
 void McpManager::load_permissions() {
     std::lock_guard lock(mutex_);
-    saved_permissions_.clear();
+    // Remove only global rules (session/chat rules are transient)
+    rules_.erase(std::remove_if(rules_.begin(), rules_.end(),
+                     [](const PermissionRule& r){ return r.scope == "global"; }),
+                 rules_.end());
+
     std::ifstream f(permissions_path());
     if (!f.is_open()) return;
     try {
         auto j = nlohmann::json::parse(f);
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            saved_permissions_[it.key()] = perm_from_string(it.value().get<std::string>());
+        for (const auto& r : j.value("rules", nlohmann::json::array())) {
+            PermissionRule rule;
+            rule.server          = r.value("server", "*");
+            rule.tool            = r.value("tool", "*");
+            rule.arg_constraints = r.value("arg_constraints", "");
+            rule.permission      = r.value("permission", "always_ask");
+            rule.scope           = "global";
+            rule.priority        = r.value("priority", 0);
+            rules_.push_back(std::move(rule));
         }
+        std::stable_sort(rules_.begin(), rules_.end(),
+                         [](const PermissionRule& a, const PermissionRule& b){
+                             return a.priority < b.priority; });
     } catch (...) {}
 }
 
 void McpManager::save_permissions() const {
     std::lock_guard lock(mutex_);
     fs::create_directories(config_dir_);
-    nlohmann::json j;
-    for (const auto& [k, v] : saved_permissions_) {
-        j[k] = perm_to_string(v);
+
+    nlohmann::json root;
+    root["rules"] = nlohmann::json::array();
+    for (const auto& r : rules_) {
+        if (r.scope != "global") continue;  // only persist global rules
+        nlohmann::json jr;
+        jr["server"]          = r.server;
+        jr["tool"]            = r.tool;
+        jr["arg_constraints"] = r.arg_constraints;
+        jr["permission"]      = r.permission;
+        jr["priority"]        = r.priority;
+        root["rules"].push_back(std::move(jr));
     }
     std::ofstream f(permissions_path());
-    f << j.dump(2);
+    f << root.dump(2);
 }
 
-McpPermission McpManager::get_permission(const std::string& server,
-                                          const std::string& tool) const {
+std::vector<PermissionRule> McpManager::list_rules(const std::string& scope_filter) const {
     std::lock_guard lock(mutex_);
-    const std::string key = server + ":" + tool;
-    auto it = saved_permissions_.find(key);
-    return (it != saved_permissions_.end()) ? it->second : McpPermission::AlwaysAsk;
+    if (scope_filter.empty()) return rules_;
+    std::vector<PermissionRule> out;
+    for (const auto& r : rules_)
+        if (r.scope == scope_filter) out.push_back(r);
+    return out;
 }
 
-void McpManager::set_permission(const std::string& server,
-                                 const std::string& tool,
-                                 McpPermission      perm) {
+void McpManager::set_rule(const PermissionRule& rule) {
     std::lock_guard lock(mutex_);
-    saved_permissions_[server + ":" + tool] = perm;
+    // Replace existing rule with same (server, tool, scope)
+    for (auto& r : rules_) {
+        if (r.server == rule.server && r.tool == rule.tool && r.scope == rule.scope) {
+            r = rule;
+            std::stable_sort(rules_.begin(), rules_.end(),
+                             [](const PermissionRule& a, const PermissionRule& b){
+                                 return a.priority < b.priority; });
+            return;
+        }
+    }
+    rules_.push_back(rule);
+    std::stable_sort(rules_.begin(), rules_.end(),
+                     [](const PermissionRule& a, const PermissionRule& b){
+                         return a.priority < b.priority; });
+}
+
+void McpManager::delete_rule(const std::string& server,
+                              const std::string& tool,
+                              const std::string& scope) {
+    std::lock_guard lock(mutex_);
+    rules_.erase(std::remove_if(rules_.begin(), rules_.end(),
+                     [&](const PermissionRule& r){
+                         return r.server == server && r.tool == tool && r.scope == scope;
+                     }), rules_.end());
+}
+
+// ── Constraint matching ───────────────────────────────────────────────────────
+
+bool McpManager::match_constraints(const std::string& constraint_json,
+                                   const std::string& args_json) {
+    if (constraint_json.empty()) return true;
+    try {
+        const auto constraints = nlohmann::json::parse(constraint_json);
+        const auto args        = nlohmann::json::parse(args_json.empty() ? "{}" : args_json);
+        for (auto it = constraints.begin(); it != constraints.end(); ++it) {
+            const auto& key     = it.key();
+            const auto& pattern = it.value().get<std::string>();
+            if (!args.contains(key)) return false;
+            const auto& val = args[key];
+            const std::string val_str = val.is_string() ? val.get<std::string>() : val.dump();
+            if (!glob_match(pattern, val_str)) return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ── Permission resolution ─────────────────────────────────────────────────────
+
+std::string McpManager::resolve_permission(const std::string& server,
+                                            const std::string& tool,
+                                            const std::string& args_json,
+                                            const std::string& session_id,
+                                            const std::string& chat_id) const {
+    std::lock_guard lock(mutex_);
+
+    // Scope priority: session > chat > global
+    const std::string session_scope = session_id.empty() ? "" : "session:" + session_id;
+    const std::string chat_scope    = chat_id.empty()    ? "" : "chat:"    + chat_id;
+
+    for (const std::string* scope : {&session_scope, &chat_scope}) {
+        if (scope->empty()) continue;
+        for (const auto& r : rules_) {
+            if (r.scope != *scope) continue;
+            if (!glob_match(r.server, server)) continue;
+            if (!glob_match(r.tool, tool))     continue;
+            if (!match_constraints(r.arg_constraints, args_json)) continue;
+            return r.permission;
+        }
+    }
+    // Global rules (already sorted by priority)
+    for (const auto& r : rules_) {
+        if (r.scope != "global") continue;
+        if (!glob_match(r.server, server)) continue;
+        if (!glob_match(r.tool, tool))     continue;
+        if (!match_constraints(r.arg_constraints, args_json)) continue;
+        return r.permission;
+    }
+    return "always_ask";  // default
 }
 
 // ── Tool call callback ────────────────────────────────────────────────────────
 
-McpManager::ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id) {
-    return [this, session_id](const compute::LanguageModel::ToolCall& call)
-               -> std::optional<std::string> {
+ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
+                                          const std::string& chat_id,
+                                          ApprovalCb         approval_cb) {
+    return [this, session_id, chat_id, approval_cb](
+               const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
 
-        std::unique_lock lock(mutex_);
+        // Resolve permission using the server name for this tool (or "" if unknown).
+        // always_deny is checked first so it short-circuits before we need to know
+        // which server owns the tool.
+        const std::string perm = resolve_permission(
+            [&]() -> std::string {
+                std::lock_guard lock(mutex_);
+                auto it = tool_to_server_.find(call.name);
+                return it != tool_to_server_.end() ? it->second : "";
+            }(),
+            call.name, call.arguments_json, session_id, chat_id);
 
-        // Route: find which server owns this tool
-        auto server_it = tool_to_server_.find(call.name);
-        if (server_it == tool_to_server_.end()) {
-            // Unknown tool — return an error result rather than denying silently
-            return R"({"error":"Tool \")" + call.name + R"(\" not found on any connected MCP server"})";
-        }
-        const std::string server_name = server_it->second;
+        if (perm == "always_deny") return std::nullopt;
 
-        // Permission check
-        const std::string perm_key    = server_name + ":" + call.name;
-        const std::string session_key = session_id + ":" + perm_key;
-        const bool session_grant      = session_allowed_.count(session_key) > 0;
-
-        McpPermission perm = McpPermission::AlwaysAsk;
-        auto perm_it = saved_permissions_.find(perm_key);
-        if (perm_it != saved_permissions_.end()) perm = perm_it->second;
-
-        if (perm == McpPermission::AlwaysDeny) return std::nullopt;  // denied
-
-        // For service context: treat AlwaysAsk as AllowSession until L.3 adds
-        // interactive approval over gRPC.  CLI wires its own approval handler.
-        const bool allowed = (perm == McpPermission::AlwaysAllow)
-                          || (perm == McpPermission::AllowSession)
-                          || session_grant
-                          || (perm == McpPermission::AlwaysAsk);  // auto-allow in service
-
-        if (!allowed) return std::nullopt;
-
-        // Grant session permission for future calls in this session
-        if (perm == McpPermission::AlwaysAsk && !session_id.empty()) {
-            session_allowed_.insert(session_key);
+        std::string server_name;
+        {
+            std::lock_guard lock(mutex_);
+            auto it = tool_to_server_.find(call.name);
+            if (it == tool_to_server_.end())
+                return R"({"error":"Tool not found on any connected MCP server"})";
+            server_name = it->second;
         }
 
-        // Dispatch to the client (release lock during the blocking call)
-        auto client_it = clients_.find(server_name);
-        if (client_it == clients_.end()) {
-            return R"({"error":"Server \")" + server_name + R"(\" is not connected"})";
+        if (perm == "always_ask") {
+            if (!approval_cb) return std::nullopt;  // no UI — deny by default
+
+            ToolApprovalRequest req;
+            req.approval_id = []{
+                // Simple UUID-like ID using random bytes
+                static std::atomic<uint64_t> counter{0};
+                return "approval-" + std::to_string(++counter);
+            }();
+            req.server      = server_name;
+            req.tool        = call.name;
+            req.args_json   = call.arguments_json;
+            req.description = "Tool call: " + server_name + "." + call.name;
+            // Mark destructive for write/exec tools heuristically
+            req.destructive = call.name.find("write") != std::string::npos ||
+                              call.name.find("delete") != std::string::npos ||
+                              call.name.find("run") != std::string::npos ||
+                              call.name.find("exec") != std::string::npos;
+
+            auto future = approval_cb(req);
+            const bool approved = future.get();  // blocks until RespondToolApproval
+            if (!approved) return std::nullopt;
         }
-        McpClient* client = client_it->second.get();
-        lock.unlock();
+
+        // Dispatch tool call (release mutex during blocking I/O)
+        McpClient* client = nullptr;
+        {
+            std::lock_guard lock(mutex_);
+            auto it = clients_.find(server_name);
+            if (it == clients_.end())
+                return R"({"error":"Server not connected"})";
+            client = it->second.get();
+        }
 
         std::string result;
         const auto err = client->call_tool(call.name, call.arguments_json, result);
-        if (!err.empty()) {
-            return R"({"error":")" + err + R"("})";
-        }
+        if (!err.empty()) return R"({"error":")" + err + R"("})";
         return result;
     };
 }

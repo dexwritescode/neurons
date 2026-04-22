@@ -10,6 +10,8 @@
 #include <grpcpp/grpcpp.h>
 #include <atomic>
 #include <functional>
+#include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -67,6 +69,42 @@ public:
                             const neurons::StreamLogsRequest* req,
                             grpc::ServerWriter<neurons::LogEntry>* writer) override;
 
+    grpc::Status RespondToolApproval(grpc::ServerContext* ctx,
+                                     const neurons::ToolApprovalResponse* req,
+                                     neurons::ToolApprovalResult* resp) override;
+
+    // ── MCP server management ─────────────────────────────────────────────────
+
+    grpc::Status ListMcpServers(grpc::ServerContext* ctx,
+                                const neurons::ListMcpServersRequest* req,
+                                neurons::ListMcpServersResponse* resp) override;
+
+    grpc::Status AddMcpServer(grpc::ServerContext* ctx,
+                              const neurons::AddMcpServerRequest* req,
+                              neurons::AddMcpServerResponse* resp) override;
+
+    grpc::Status RemoveMcpServer(grpc::ServerContext* ctx,
+                                 const neurons::RemoveMcpServerRequest* req,
+                                 neurons::RemoveMcpServerResponse* resp) override;
+
+    grpc::Status PushMcpServers(grpc::ServerContext* ctx,
+                                const neurons::PushMcpServersRequest* req,
+                                neurons::PushMcpServersResponse* resp) override;
+
+    // ── MCP permission management ─────────────────────────────────────────────
+
+    grpc::Status ListPermissionRules(grpc::ServerContext* ctx,
+                                     const neurons::ListPermissionRulesRequest* req,
+                                     neurons::ListPermissionRulesResponse* resp) override;
+
+    grpc::Status SetPermissionRule(grpc::ServerContext* ctx,
+                                   const neurons::SetPermissionRuleRequest* req,
+                                   neurons::SetPermissionRuleResponse* resp) override;
+
+    grpc::Status DeletePermissionRule(grpc::ServerContext* ctx,
+                                      const neurons::DeletePermissionRuleRequest* req,
+                                      neurons::DeletePermissionRuleResponse* resp) override;
+
     // Load a model directly without going through the gRPC call path.
     // Must be called from the main thread (MLX requires main-thread model loading).
     bool load_model_internal(const std::string& path, std::string& error_out);
@@ -102,7 +140,8 @@ public:
                            std::string&                    error_out,
                            uint32_t*                       prompt_tokens_out = nullptr,
                            uint32_t*                       gen_tokens_out    = nullptr,
-                           ToolCallCb                      tool_cb           = nullptr);
+                           ToolCallCb                      tool_cb           = nullptr,
+                           ApprovalCb                      approval_cb       = nullptr);
 
     // Callback receives (bytes_done, bytes_total, speed_bps, current_file).
     // Return false to cancel.
@@ -141,6 +180,11 @@ private:
     std::string build_prompt(const compute::LanguageModel& model,
                              const neurons::GenerateRequest& req,
                              int token_budget = 0) const;
+
+    // Pending tool-approval futures: approval_id → promise<approved>
+    // Written by Generate (blocking on future.get()), resolved by RespondToolApproval.
+    mutable std::mutex approvals_mutex_;
+    std::map<std::string, std::promise<bool>> pending_approvals_;
 };
 
 } // namespace neurons_service

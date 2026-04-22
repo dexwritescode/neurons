@@ -171,3 +171,36 @@ install(TARGETS neurons_core
     LIBRARY DESTINATION lib  COMPONENT neurons_core   # .so / .dylib
     RUNTIME DESTINATION bin  COMPONENT neurons_core   # .dll (Windows)
 )
+
+# ── Service unit tests ────────────────────────────────────────────────────────
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # gtest/gmock are fetched by compute/CMakeLists.txt (part of the same project)
+    include(GoogleTest)
+
+    add_executable(service_tests
+        tests/test_mcp_manager.cpp
+        tests/test_mcp_rpc.cpp
+    )
+
+    target_include_directories(service_tests PRIVATE
+        src
+        ${PROTO_OUT}
+        ${CMAKE_SOURCE_DIR}/compute/src
+        ${CMAKE_SOURCE_DIR}/models/src
+    )
+
+    target_compile_definitions(service_tests PRIVATE
+        MCTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+
+    target_link_libraries(service_tests PRIVATE
+        neurons_service_lib
+        gtest_main
+        gmock
+    )
+
+    gtest_discover_tests(service_tests
+        PROPERTIES LABELS "unit"
+    )
+endif()

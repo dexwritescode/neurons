@@ -44,6 +44,40 @@ mixin _NoBrowserMixin implements NeuronsClient {
 
   @override
   Stream<LogEntry> streamLogs({String minLevel = 'INFO'}) async* {}
+
+  @override
+  Future<ToolApprovalResult> respondToolApproval(String approvalId, bool approved,
+          {String newPermission = ''}) async =>
+      proto.ToolApprovalResult()..success = true;
+
+  @override
+  Future<ListMcpServersResponse> listMcpServers() async =>
+      proto.ListMcpServersResponse();
+
+  @override
+  Future<AddMcpServerResponse> addMcpServer(McpServerConfig server) async =>
+      proto.AddMcpServerResponse()..success = true;
+
+  @override
+  Future<RemoveMcpServerResponse> removeMcpServer(String name) async =>
+      proto.RemoveMcpServerResponse()..success = true;
+
+  @override
+  Future<PushMcpServersResponse> pushMcpServers(List<McpServerConfig> servers) async =>
+      proto.PushMcpServersResponse()..success = true;
+
+  @override
+  Future<ListPermissionRulesResponse> listPermissionRules({String scope = ''}) async =>
+      proto.ListPermissionRulesResponse();
+
+  @override
+  Future<SetPermissionRuleResponse> setPermissionRule(PermissionRule rule) async =>
+      proto.SetPermissionRuleResponse()..success = true;
+
+  @override
+  Future<DeletePermissionRuleResponse> deletePermissionRule(
+          String server, String tool, String scope) async =>
+      proto.DeletePermissionRuleResponse()..success = true;
 }
 
 /// Minimal stub — all methods return empty successful responses.
