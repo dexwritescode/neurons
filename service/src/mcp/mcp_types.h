@@ -8,32 +8,42 @@ namespace neurons_service {
 
 enum class McpTransport { Stdio, Sse };
 
-enum class McpPermission {
-    AlwaysAsk,    // prompt on every call (default for write/exec tools)
-    AllowSession, // allow for the rest of this generation session
-    AlwaysAllow,  // persisted — never ask again
-    AlwaysDeny,   // persisted — silently reject all calls to this tool
-};
-
 struct McpServerConfig {
     std::string  name;
     McpTransport transport = McpTransport::Stdio;
-    // stdio transport
     std::string              command;
     std::vector<std::string> args;
-    // sse transport
     std::string url;
-    // common
     std::unordered_map<std::string, std::string> env;
     bool enabled = true;
 };
 
+// A permission rule. Rules are evaluated in priority order (lower = first).
+// First match wins; no match defaults to always_ask.
+//
+// arg_constraints: JSON object whose keys are arg field names and values are
+// glob patterns matched against the corresponding field in the tool's args_json.
+// Empty string = match any invocation.
+//
+// scope:
+//   "global"          — persisted in mcp_permissions.json
+//   "session:<id>"    — in-memory, cleared when the session ends
+//   "chat:<id>"       — persisted in the ChatSession JSON
+struct PermissionRule {
+    std::string server;           // exact name or "*"
+    std::string tool;             // exact name or "*"
+    std::string arg_constraints;  // JSON object string, empty = no constraint
+    std::string permission;       // "always_allow" | "allow_session" | "always_ask" | "always_deny"
+    std::string scope;            // "global" | "session:<id>" | "chat:<id>"
+    int         priority = 0;     // lower evaluated first
+};
+
 // A tool exposed by an MCP server.
 struct ToolDef {
-    std::string server_name;       // owning server
+    std::string server_name;
     std::string name;
     std::string description;
-    std::string input_schema_json; // JSON Schema object string
+    std::string input_schema_json;
 };
 
 } // namespace neurons_service

@@ -11,9 +11,13 @@ service NeuronsInference {
   // Unload the current model and free resources.
   rpc UnloadModel    (UnloadModelRequest)    returns (UnloadModelResponse);
 
-  // Generate tokens for a prompt. Streams one GenerateResponse per token.
+  // Generate tokens for a prompt. Streams one GenerateResponse per event.
+  // Events: token frames, tool calls, tool results, approval requests.
   // The final message has done=true and includes total token counts.
   rpc Generate       (GenerateRequest)       returns (stream GenerateResponse);
+
+  // Resume a generation paused on an always_ask tool approval.
+  rpc RespondToolApproval (ToolApprovalResponse) returns (ToolApprovalResult);
 
   // Return status of the service (loaded model, backend, etc.).
   rpc GetStatus      (StatusRequest)         returns (StatusResponse);
@@ -40,6 +44,19 @@ service NeuronsInference {
 
   // Stream log entries from the service. Stays open until client cancels.
   rpc StreamLogs     (StreamLogsRequest)     returns (stream LogEntry);
+
+  // ── MCP server management ──────────────────────────────────────────────────
+  rpc ListMcpServers  (ListMcpServersRequest)  returns (ListMcpServersResponse);
+  rpc AddMcpServer    (AddMcpServerRequest)    returns (AddMcpServerResponse);
+  rpc RemoveMcpServer (RemoveMcpServerRequest) returns (RemoveMcpServerResponse);
+
+  // Push controller's server list to a node operating in inherit mode.
+  rpc PushMcpServers  (PushMcpServersRequest)  returns (PushMcpServersResponse);
+
+  // ── MCP permission management ──────────────────────────────────────────────
+  rpc ListPermissionRules  (ListPermissionRulesRequest)  returns (ListPermissionRulesResponse);
+  rpc SetPermissionRule    (SetPermissionRuleRequest)    returns (SetPermissionRuleResponse);
+  rpc DeletePermissionRule (DeletePermissionRuleRequest) returns (DeletePermissionRuleResponse);
 }
 
 // ── LoadModel ────────────────────────────────────────────────────────────────
@@ -92,14 +109,72 @@ message GenerateRequest {
 
   // Sampling configuration. If omitted, service defaults apply.
   SamplingParams params = 3;
+
+  // MCP server names to activate for this generation (must be configured on
+  // the node). Empty = no tool use even if model supports it.
+  repeated string active_mcp_servers = 4;
+
+  // Chat session ID — used to scope session-level permission overrides and
+  // per-chat permission rules.
+  string session_id = 5;
+}
+
+// ── Tool events (interleaved in the Generate stream) ─────────────────────────
+
+// Emitted when the model has issued a tool call and the service is about to
+// execute it (permission already granted).
+message ToolCallEvent {
+  string server    = 1;  // MCP server name
+  string tool      = 2;  // Tool name
+  string args_json = 3;  // Raw JSON arguments
+}
+
+// Emitted after a tool call completes.
+message ToolResultEvent {
+  string server      = 1;
+  string tool        = 2;
+  string result_json = 3;
+  int64  elapsed_ms  = 4;
+  bool   error       = 5;  // True if the tool returned an error result
+}
+
+// Emitted when a tool call requires explicit user approval (always_ask).
+// Generation is paused until RespondToolApproval is called with this ID.
+message ToolApprovalRequest {
+  string approval_id  = 1;  // UUID — pass back in ToolApprovalResponse
+  string server       = 2;
+  string tool         = 3;
+  string args_json    = 4;
+  string description  = 5;  // Human-readable summary of what the tool will do
+  bool   destructive  = 6;  // True for write/execute tools — GUI shows red banner
 }
 
 message GenerateResponse {
-  string token         = 1;  // Decoded token text (one per message while done=false)
+  oneof event {
+    string             token            = 1;  // Decoded token text
+    ToolCallEvent      tool_call        = 6;  // Tool about to execute
+    ToolResultEvent    tool_result      = 7;  // Tool finished
+    ToolApprovalRequest approval_request = 8; // Waiting for user approval
+  }
   bool   done          = 2;  // True on the final message
   uint32 prompt_tokens = 3;  // Only set when done=true
   uint32 gen_tokens    = 4;  // Only set when done=true
   string error         = 5;  // Non-empty if generation failed
+}
+
+// ── Tool approval ─────────────────────────────────────────────────────────────
+
+message ToolApprovalResponse {
+  string approval_id     = 1;
+  bool   approved        = 2;
+  // Optional: update the persisted rule for this (server, tool) going forward.
+  // Empty = one-shot decision, nothing saved.
+  string new_permission  = 3;  // "allow_session" | "always_allow" | "always_deny"
+}
+
+message ToolApprovalResult {
+  bool   success = 1;
+  string error   = 2;  // Non-empty if approval_id was not found / already resolved
 }
 
 // ── GetStatus ────────────────────────────────────────────────────────────────
@@ -231,4 +306,86 @@ message LogEntry {
   int64  timestamp_ms = 1;
   string level        = 2;  // "INFO" | "WARN" | "ERROR"
   string message      = 3;
+}
+
+// ── MCP ───────────────────────────────────────────────────────────────────────
+
+message McpServerConfig {
+  string              name      = 1;
+  string              transport = 2;  // "stdio" | "sse"
+  string              command   = 3;  // stdio: executable path
+  repeated string     args      = 4;  // stdio: arguments
+  string              url       = 5;  // sse: endpoint URL
+  map<string, string> env       = 6;  // environment variables
+  bool                enabled   = 7;
+}
+
+// A permission rule. Rules are evaluated in order; first match wins.
+// arg_constraints: JSON object whose keys are arg field names and values are
+// glob patterns matched against the corresponding field in the tool's args_json.
+// Empty arg_constraints matches any invocation of the tool.
+message PermissionRule {
+  string server           = 1;  // exact server name or "*"
+  string tool             = 2;  // exact tool name or "*"
+  string arg_constraints  = 3;  // JSON object e.g. {"path":"/Users/dex/src/**"}
+  string permission       = 4;  // "always_allow" | "allow_session" | "always_ask" | "always_deny"
+  string scope            = 5;  // "global" | "session:<id>" | "chat:<id>"
+  int32  priority         = 6;  // lower = evaluated first; default 0
+}
+
+// ── MCP server management ─────────────────────────────────────────────────────
+
+message ListMcpServersRequest {}
+message ListMcpServersResponse {
+  repeated McpServerConfig servers = 1;
+}
+
+message AddMcpServerRequest {
+  McpServerConfig server = 1;
+}
+message AddMcpServerResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message RemoveMcpServerRequest {
+  string name = 1;
+}
+message RemoveMcpServerResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+// Controller pushes its server list to a node in inherit mode.
+message PushMcpServersRequest {
+  repeated McpServerConfig servers = 1;
+}
+message PushMcpServersResponse {
+  bool success = 1;
+}
+
+// ── MCP permission management ─────────────────────────────────────────────────
+
+message ListPermissionRulesRequest {
+  string scope = 1;  // filter by scope; empty = return all
+}
+message ListPermissionRulesResponse {
+  repeated PermissionRule rules = 1;
+}
+
+message SetPermissionRuleRequest {
+  PermissionRule rule = 1;
+}
+message SetPermissionRuleResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message DeletePermissionRuleRequest {
+  string server = 1;
+  string tool   = 2;
+  string scope  = 3;
+}
+message DeletePermissionRuleResponse {
+  bool success = 1;
 }

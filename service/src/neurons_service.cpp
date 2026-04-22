@@ -472,6 +472,32 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
     std::string gen_error;
     const auto gen_start = std::chrono::steady_clock::now();
 
+    // Build approval callback: streams the request over gRPC, registers a promise
+    // that RespondToolApproval will resolve when the user responds.
+    ApprovalCb approval_cb = [this, ctx, writer](
+            const ToolApprovalRequest& req) -> std::future<bool> {
+        std::promise<bool> promise;
+        auto future = promise.get_future();
+        const std::string id = req.approval_id;
+        {
+            std::lock_guard<std::mutex> lk(approvals_mutex_);
+            pending_approvals_[id] = std::move(promise);
+        }
+        // Stream the approval request event to the client.
+        if (!ctx->IsCancelled()) {
+            neurons::GenerateResponse resp;
+            auto* ar = resp.mutable_approval_request();
+            ar->set_approval_id(req.approval_id);
+            ar->set_server(req.server);
+            ar->set_tool(req.tool);
+            ar->set_args_json(req.args_json);
+            ar->set_description(req.description);
+            ar->set_destructive(req.destructive);
+            writer->Write(resp);
+        }
+        return future;
+    };
+
     generate_internal(*req, not_cancelled,
         [&](const std::string& delta) -> bool {
             if (ctx->IsCancelled()) return false;
@@ -483,7 +509,18 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         },
         gen_error,
         &prompt_token_count,
-        &gen_token_count);
+        &gen_token_count,
+        nullptr,        // tool_cb — built inside generate_internal
+        approval_cb);
+
+    // Clean up any approvals still pending (client disconnected mid-flow)
+    {
+        std::lock_guard<std::mutex> lk(approvals_mutex_);
+        for (auto it = pending_approvals_.begin(); it != pending_approvals_.end(); ) {
+            it->second.set_value(false);
+            it = pending_approvals_.erase(it);
+        }
+    }
 
     // Record tok/s for GetStatus
     if (gen_token_count > 0) {
@@ -668,7 +705,8 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
                                             std::string&                    error_out,
                                             uint32_t*                       prompt_tokens_out,
                                             uint32_t*                       gen_tokens_out,
-                                            ToolCallCb                      tool_cb) {
+                                            ToolCallCb                      tool_cb,
+                                            ApprovalCb                      approval_cb) {
     compute::LanguageModel* mdl = nullptr;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
@@ -702,7 +740,8 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
 
     // If no explicit callback provided, use the McpManager if tools are available.
     if (!tool_cb && mcp_manager_.has_active_tools() && mdl->supports_tool_use()) {
-        tool_cb = mcp_manager_.make_tool_call_cb(session_id);
+        const std::string chat_id = req.session_id();
+        tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb);
     }
     const bool can_use_tools = (tool_cb != nullptr) && mdl->supports_tool_use();
     static constexpr int kMaxToolTurns = 5;
@@ -855,6 +894,160 @@ grpc::Status NeuronsServiceImpl::StreamLogs(grpc::ServerContext* ctx,
     }
 
     Logger::global().unsubscribe(sub_id);
+    return grpc::Status::OK;
+}
+
+// ── RespondToolApproval ───────────────────────────────────────────────────────
+
+grpc::Status NeuronsServiceImpl::RespondToolApproval(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::ToolApprovalResponse* req,
+        neurons::ToolApprovalResult* resp) {
+    std::lock_guard<std::mutex> lk(approvals_mutex_);
+    auto it = pending_approvals_.find(req->approval_id());
+    if (it == pending_approvals_.end()) {
+        resp->set_success(false);
+        resp->set_error("approval_id not found or already resolved");
+        return grpc::Status::OK;
+    }
+    it->second.set_value(req->approved());
+    pending_approvals_.erase(it);
+    resp->set_success(true);
+    return grpc::Status::OK;
+}
+
+// ── MCP server management ─────────────────────────────────────────────────────
+
+namespace {
+// Convert proto McpServerConfig → internal McpServerConfig
+McpServerConfig proto_to_cfg(const neurons::McpServerConfig& p) {
+    McpServerConfig c;
+    c.name      = p.name();
+    c.transport = (p.transport() == "sse") ? McpTransport::Sse : McpTransport::Stdio;
+    c.command   = p.command();
+    for (const auto& a : p.args()) c.args.push_back(a);
+    c.url       = p.url();
+    for (const auto& [k, v] : p.env()) c.env[k] = v;
+    c.enabled   = p.enabled();
+    return c;
+}
+
+// Convert internal McpServerConfig → proto McpServerConfig
+void cfg_to_proto(const McpServerConfig& c, neurons::McpServerConfig* p) {
+    p->set_name(c.name);
+    p->set_transport(c.transport == McpTransport::Sse ? "sse" : "stdio");
+    p->set_command(c.command);
+    for (const auto& a : c.args) p->add_args(a);
+    p->set_url(c.url);
+    for (const auto& [k, v] : c.env) (*p->mutable_env())[k] = v;
+    p->set_enabled(c.enabled);
+}
+
+// Convert proto PermissionRule ↔ internal PermissionRule
+PermissionRule proto_to_rule(const neurons::PermissionRule& p) {
+    PermissionRule r;
+    r.server          = p.server();
+    r.tool            = p.tool();
+    r.arg_constraints = p.arg_constraints();
+    r.permission      = p.permission();
+    r.scope           = p.scope();
+    r.priority        = p.priority();
+    return r;
+}
+
+void rule_to_proto(const PermissionRule& r, neurons::PermissionRule* p) {
+    p->set_server(r.server);
+    p->set_tool(r.tool);
+    p->set_arg_constraints(r.arg_constraints);
+    p->set_permission(r.permission);
+    p->set_scope(r.scope);
+    p->set_priority(r.priority);
+}
+} // anonymous namespace
+
+grpc::Status NeuronsServiceImpl::ListMcpServers(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::ListMcpServersRequest* /*req*/,
+        neurons::ListMcpServersResponse* resp) {
+    for (const auto& c : mcp_manager_.list_servers())
+        cfg_to_proto(c, resp->add_servers());
+    return grpc::Status::OK;
+}
+
+grpc::Status NeuronsServiceImpl::AddMcpServer(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::AddMcpServerRequest* req,
+        neurons::AddMcpServerResponse* resp) {
+    if (!req->has_server() || req->server().name().empty()) {
+        resp->set_success(false);
+        resp->set_error("server name is required");
+        return grpc::Status::OK;
+    }
+    mcp_manager_.add_server(proto_to_cfg(req->server()));
+    mcp_manager_.save_config();
+    resp->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status NeuronsServiceImpl::RemoveMcpServer(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::RemoveMcpServerRequest* req,
+        neurons::RemoveMcpServerResponse* resp) {
+    const bool removed = mcp_manager_.remove_server(req->name());
+    if (removed) mcp_manager_.save_config();
+    resp->set_success(removed);
+    if (!removed) resp->set_error("server not found: " + req->name());
+    return grpc::Status::OK;
+}
+
+grpc::Status NeuronsServiceImpl::PushMcpServers(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::PushMcpServersRequest* req,
+        neurons::PushMcpServersResponse* resp) {
+    std::vector<McpServerConfig> servers;
+    servers.reserve(req->servers_size());
+    for (const auto& p : req->servers()) servers.push_back(proto_to_cfg(p));
+    mcp_manager_.push_servers(servers);
+    resp->set_success(true);
+    return grpc::Status::OK;
+}
+
+// ── MCP permission management ─────────────────────────────────────────────────
+
+grpc::Status NeuronsServiceImpl::ListPermissionRules(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::ListPermissionRulesRequest* req,
+        neurons::ListPermissionRulesResponse* resp) {
+    for (const auto& r : mcp_manager_.list_rules(req->scope()))
+        rule_to_proto(r, resp->add_rules());
+    return grpc::Status::OK;
+}
+
+grpc::Status NeuronsServiceImpl::SetPermissionRule(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::SetPermissionRuleRequest* req,
+        neurons::SetPermissionRuleResponse* resp) {
+    if (!req->has_rule()) {
+        resp->set_success(false);
+        resp->set_error("rule is required");
+        return grpc::Status::OK;
+    }
+    const auto rule = proto_to_rule(req->rule());
+    mcp_manager_.set_rule(rule);
+    if (rule.scope == "global") mcp_manager_.save_permissions();
+    resp->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status NeuronsServiceImpl::DeletePermissionRule(
+        grpc::ServerContext* /*ctx*/,
+        const neurons::DeletePermissionRuleRequest* req,
+        neurons::DeletePermissionRuleResponse* resp) {
+    mcp_manager_.delete_rule(req->server(), req->tool(), req->scope());
+    // Re-save globals only when scope is global
+    if (req->scope() == "global" || req->scope().empty())
+        mcp_manager_.save_permissions();
+    resp->set_success(true);
     return grpc::Status::OK;
 }
 

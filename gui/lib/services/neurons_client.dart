@@ -37,6 +37,32 @@ abstract class NeuronsClient {
   /// Stream log entries from the service. The stream stays open until cancelled.
   Stream<LogEntry> streamLogs({String minLevel = 'INFO'});
 
+  // ── Tool approval ────────────────────────────────────────────────────────────
+
+  /// Respond to a pending tool approval request (emitted in the generate stream).
+  Future<ToolApprovalResult> respondToolApproval(
+    String approvalId,
+    bool approved, {
+    String newPermission = '',
+  });
+
+  // ── MCP server management ────────────────────────────────────────────────────
+
+  Future<ListMcpServersResponse> listMcpServers();
+  Future<AddMcpServerResponse> addMcpServer(McpServerConfig server);
+  Future<RemoveMcpServerResponse> removeMcpServer(String name);
+  Future<PushMcpServersResponse> pushMcpServers(List<McpServerConfig> servers);
+
+  // ── MCP permission management ─────────────────────────────────────────────
+
+  Future<ListPermissionRulesResponse> listPermissionRules({String scope = ''});
+  Future<SetPermissionRuleResponse> setPermissionRule(PermissionRule rule);
+  Future<DeletePermissionRuleResponse> deletePermissionRule(
+    String server,
+    String tool,
+    String scope,
+  );
+
   void close();
 }
 
@@ -122,6 +148,58 @@ class GrpcNeuronsClient implements NeuronsClient {
   @override
   Stream<LogEntry> streamLogs({String minLevel = 'INFO'}) =>
       _stub.streamLogs(StreamLogsRequest()..minLevel = minLevel);
+
+  // ── Tool approval ────────────────────────────────────────────────────────────
+
+  @override
+  Future<ToolApprovalResult> respondToolApproval(
+    String approvalId,
+    bool approved, {
+    String newPermission = '',
+  }) =>
+      _stub.respondToolApproval(ToolApprovalResponse()
+        ..approvalId = approvalId
+        ..approved = approved
+        ..newPermission = newPermission);
+
+  // ── MCP server management ────────────────────────────────────────────────────
+
+  @override
+  Future<ListMcpServersResponse> listMcpServers() =>
+      _stub.listMcpServers(ListMcpServersRequest());
+
+  @override
+  Future<AddMcpServerResponse> addMcpServer(McpServerConfig server) =>
+      _stub.addMcpServer(AddMcpServerRequest()..server = server);
+
+  @override
+  Future<RemoveMcpServerResponse> removeMcpServer(String name) =>
+      _stub.removeMcpServer(RemoveMcpServerRequest()..name = name);
+
+  @override
+  Future<PushMcpServersResponse> pushMcpServers(List<McpServerConfig> servers) =>
+      _stub.pushMcpServers(PushMcpServersRequest()..servers.addAll(servers));
+
+  // ── MCP permission management ─────────────────────────────────────────────
+
+  @override
+  Future<ListPermissionRulesResponse> listPermissionRules({String scope = ''}) =>
+      _stub.listPermissionRules(ListPermissionRulesRequest()..scope = scope);
+
+  @override
+  Future<SetPermissionRuleResponse> setPermissionRule(PermissionRule rule) =>
+      _stub.setPermissionRule(SetPermissionRuleRequest()..rule = rule);
+
+  @override
+  Future<DeletePermissionRuleResponse> deletePermissionRule(
+    String server,
+    String tool,
+    String scope,
+  ) =>
+      _stub.deletePermissionRule(DeletePermissionRuleRequest()
+        ..server = server
+        ..tool = tool
+        ..scope = scope);
 
   @override
   void close() => _channel.shutdown();

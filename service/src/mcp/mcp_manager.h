@@ -5,15 +5,37 @@
 #include "compute/model/language_model.h"
 
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace neurons_service {
+
+// Approval request issued to the caller when a tool needs always_ask permission.
+struct ToolApprovalRequest {
+    std::string approval_id;
+    std::string server;
+    std::string tool;
+    std::string args_json;
+    std::string description;
+    bool        destructive = false;
+};
+
+// Callback types for the Generate stream.
+// ApprovalCb: called when a tool requires explicit user approval.
+// Returns a future that resolves to true (approved) or false (denied) when
+// RespondToolApproval is called with the same approval_id.
+using ApprovalCb = std::function<std::future<bool>(const ToolApprovalRequest&)>;
+
+// ToolCallCb: return value from make_tool_call_cb().
+// nullopt = denied (tool call silently dropped).
+// string  = tool result JSON to inject into the context.
+using ToolCallCb = std::function<
+    std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
 
 // Owns and coordinates MCP server connections.
 // Aggregates tool lists across active servers, enforces per-tool permissions,
@@ -35,72 +57,75 @@ public:
     bool                         remove_server(const std::string& name);
     std::vector<McpServerConfig> list_servers() const;
 
+    // Replace entire server list (used by PushMcpServers inherit-mode).
+    // Does not persist — in-memory only for the session.
+    void push_servers(const std::vector<McpServerConfig>& servers);
+
     // ── Connections ───────────────────────────────────────────────────────────
 
-    // Connect all servers that are enabled in the stored config.
-    // Skips servers that are already connected.
-    void connect_enabled();
-
-    // Connect / disconnect a single server by name.
-    // Returns "" on success or an error message.
+    void        connect_enabled();
     std::string connect_server(const std::string& name);
     void        disconnect_server(const std::string& name);
     bool        is_connected(const std::string& name) const;
 
     // ── Tool queries ──────────────────────────────────────────────────────────
 
-    // Aggregate tool list across all connected servers.
     std::vector<ToolDef> list_tools();
+    std::string          tools_json();
+    bool                 has_active_tools() const;
 
-    // JSON array of tool definitions in OpenAI function-calling format.
-    // Suitable for passing to LanguageModel::format_tool_system_prompt().
-    std::string tools_json();
-
-    // ── Permissions (persisted to mcp_permissions.json) ──────────────────────
+    // ── Permission rules ──────────────────────────────────────────────────────
 
     void load_permissions();
     void save_permissions() const;
 
-    McpPermission get_permission(const std::string& server,
-                                 const std::string& tool) const;
-    void          set_permission(const std::string& server,
-                                 const std::string& tool,
-                                 McpPermission      perm);
+    // Returns rules matching the given scope filter (empty = all scopes).
+    std::vector<PermissionRule> list_rules(const std::string& scope_filter = "") const;
+
+    // Add or replace a rule. Rules with the same (server, tool, scope) are replaced.
+    void set_rule(const PermissionRule& rule);
+
+    // Remove rules matching (server, tool, scope).
+    void delete_rule(const std::string& server,
+                     const std::string& tool,
+                     const std::string& scope);
+
+    // Resolve permission for a tool call given its parsed args_json.
+    // Checks session overrides, then per-chat rules, then global rules.
+    // Returns "always_allow" | "allow_session" | "always_ask" | "always_deny".
+    std::string resolve_permission(const std::string& server,
+                                   const std::string& tool,
+                                   const std::string& args_json,
+                                   const std::string& session_id,
+                                   const std::string& chat_id) const;
 
     // ── Tool call callback ────────────────────────────────────────────────────
 
-    // Returns a ToolCallCb suitable for passing to NeuronsServiceImpl::generate_internal().
-    // session_id: unique string per generation session — used to track
-    //   "allow for session" grants that don't persist to disk.
-    using ToolCallCb = std::function<
-        std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
-
-    ToolCallCb make_tool_call_cb(const std::string& session_id = "");
-
-    // Check if any enabled server is connected (i.e., tools are available).
-    bool has_active_tools() const;
+    // approval_cb: called when a tool's resolved permission is "always_ask".
+    // Returns a ToolCallCb suitable for passing to generate_internal().
+    ToolCallCb make_tool_call_cb(const std::string& session_id = "",
+                                 const std::string& chat_id    = "",
+                                 ApprovalCb         approval_cb = nullptr);
 
 private:
     std::string servers_path()     const;
     std::string permissions_path() const;
 
-    // Rebuild the tool→server map from currently connected clients.
-    // Must be called under mutex_.
     void rebuild_tool_map_locked();
+
+    // Returns true if args_json satisfies constraint_json (glob matching).
+    // Empty constraint_json always matches.
+    static bool match_constraints(const std::string& constraint_json,
+                                  const std::string& args_json);
 
     std::string config_dir_;
 
-    std::vector<McpServerConfig>                               server_configs_;
+    std::vector<McpServerConfig>                                server_configs_;
     std::unordered_map<std::string, std::unique_ptr<McpClient>> clients_;
+    std::unordered_map<std::string, std::string>                tool_to_server_;
 
-    // tool_name → server_name (rebuilt on connect/disconnect)
-    std::unordered_map<std::string, std::string> tool_to_server_;
-
-    // Persisted permissions key: "server_name:tool_name"
-    std::unordered_map<std::string, McpPermission> saved_permissions_;
-
-    // Per-session grants (not persisted) key: "session_id:server_name:tool_name"
-    std::unordered_set<std::string> session_allowed_;
+    // All permission rules, sorted by priority on modification.
+    std::vector<PermissionRule> rules_;
 
     mutable std::mutex mutex_;
 };
