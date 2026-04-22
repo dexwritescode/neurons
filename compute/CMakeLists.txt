@@ -11,10 +11,11 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     include(FetchContent)
 
     # Fetch MLX from Apple's repository - using stable release
+    set(MLX_VERSION "0.31.1")
     FetchContent_Declare(
         mlx
         GIT_REPOSITORY https://github.com/ml-explore/mlx.git
-        GIT_TAG        v0.31.1  # Latest stable release
+        GIT_TAG        v${MLX_VERSION}
     )
 
     # Configure MLX build options
@@ -25,7 +26,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     FetchContent_MakeAvailable(mlx)
 
     if(TARGET mlx)
-        message(STATUS "MLX v0.29.0 fetched successfully - enabling MLX backend")
+        message(STATUS "MLX v${MLX_VERSION} fetched successfully - enabling MLX backend")
         list(APPEND BACKEND_SOURCES
             src/compute/backends/mlx/mlx_backend.h
             src/compute/backends/mlx/mlx_backend.cpp

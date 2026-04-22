@@ -71,6 +71,7 @@ class AppState extends ChangeNotifier {
   /// The model's absolute maximum context length in tokens (from config).
   /// Used to cap the context-window slider in the load settings sheet.
   int maxPositionEmbeddings = 0;
+  bool supportsToolUse = false;
   String? statusError;
 
   /// OpenAI HTTP server port reported by the active node (0 = not running).
@@ -450,11 +451,12 @@ class AppState extends ChangeNotifier {
     try {
       final resp = await _client.loadModel(path);
       if (resp.success) {
-        modelPath  = path;
-        modelType  = resp.modelType;
-        vocabSize  = resp.vocabSize.toInt();
-        numLayers  = resp.numLayers.toInt();
+        modelPath      = path;
+        modelType      = resp.modelType;
+        vocabSize      = resp.vocabSize.toInt();
+        numLayers      = resp.numLayers.toInt();
         maxPositionEmbeddings = resp.maxPositionEmbeddings.toInt();
+        supportsToolUse = resp.supportsToolUse;
         // Seed context window to max, then overwrite with any previously saved settings.
         inferenceSettings.contextWindow = maxPositionEmbeddings;
         await _loadInferenceSettings(path);
@@ -474,12 +476,13 @@ class AppState extends ChangeNotifier {
   Future<bool> unloadModel() async {
     try {
       await _client.unloadModel();
-      modelPath  = null;
-      modelType  = null;
-      backend    = null;
-      vocabSize  = 0;
-      numLayers  = 0;
+      modelPath       = null;
+      modelType       = null;
+      backend         = null;
+      vocabSize       = 0;
+      numLayers       = 0;
       maxPositionEmbeddings = 0;
+      supportsToolUse = false;
       notifyListeners();
       return true;
     } catch (_) {
@@ -754,19 +757,21 @@ class AppState extends ChangeNotifier {
   void _applyStatus(proto.StatusResponse s) {
     httpPort = s.httpPort.toInt();
     if (s.modelLoaded) {
-      modelPath = s.modelPath;
-      modelType = s.modelType;
-      backend   = s.backend;
-      vocabSize = s.vocabSize.toInt();
-      numLayers = s.numLayers.toInt();
+      modelPath       = s.modelPath;
+      modelType       = s.modelType;
+      backend         = s.backend;
+      vocabSize       = s.vocabSize.toInt();
+      numLayers       = s.numLayers.toInt();
       maxPositionEmbeddings = s.maxPositionEmbeddings.toInt();
+      supportsToolUse = s.supportsToolUse;
       if (inferenceSettings.contextWindow == 0) {
         inferenceSettings.contextWindow = maxPositionEmbeddings;
       }
     } else {
-      modelPath = null;
-      modelType = null;
+      modelPath       = null;
+      modelType       = null;
       maxPositionEmbeddings = 0;
+      supportsToolUse = false;
     }
   }
 

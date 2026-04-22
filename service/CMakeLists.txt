@@ -101,6 +101,8 @@ add_library(neurons_service_lib STATIC
     src/neurons_service.cpp
     src/logger.cpp
     src/http_server.cpp
+    src/mcp/mcp_client.cpp
+    src/mcp/mcp_manager.cpp
 )
 
 target_include_directories(neurons_service_lib PUBLIC

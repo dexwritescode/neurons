@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,36 @@ public:
     virtual const SimpleBpeTokenizer& tokenizer()      const = 0;
     virtual ComputeBackend*           backend()        const = 0;
     virtual size_t                    num_parameters() const = 0;
+
+    // ── Tool-use capability ───────────────────────────────────────────────────
+
+    // A parsed tool call emitted by the model during generation.
+    struct ToolCall {
+        std::string name;            // function name
+        std::string arguments_json;  // JSON object string (OpenAI-style)
+    };
+
+    // True if this model supports structured tool/function calling.
+    // Detected at load time via tokenizer vocab probe + model-name heuristics.
+    virtual bool supports_tool_use() const { return false; }
+
+    // Given a JSON array of tool definitions (OpenAI format), returns the
+    // text to prepend to the system message for this model family.
+    // Returns empty string for models that don't support tool use.
+    virtual std::string format_tool_system_prompt(const std::string& tools_json) const { return ""; }
+
+    // Scan accumulated generated text for a complete tool-call block.
+    // Returns the parsed ToolCall when a complete block is detected.
+    // The caller should stop generation and invoke the tool when this fires.
+    // Returns nullopt while the block is incomplete or absent.
+    virtual std::optional<ToolCall> detect_tool_call(const std::string& text) const { return std::nullopt; }
+
+    // Build the text to inject after a tool call so the model can continue.
+    // result_json: the tool's output (or an error string if denied).
+    // Returns the full injection string including any assistant-turn prefix
+    // needed to resume generation for this model family.
+    virtual std::string format_tool_result(const std::string& tool_name,
+                                           const std::string& result_json) const { return ""; }
 
     // ── Factory ───────────────────────────────────────────────────────────────
 

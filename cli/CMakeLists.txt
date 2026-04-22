@@ -94,8 +94,13 @@ add_executable(cli
     src/cli/commands/chat_command.cpp
     src/cli/commands/server_command.h
     src/cli/commands/server_command.cpp
+    src/cli/commands/mcp_command.h
+    src/cli/commands/mcp_command.cpp
     src/cli/commands/base_command.h
     src/cli/commands/base_command.cpp
+    # MCP client/manager (shared sources from service/)
+    ../service/src/mcp/mcp_client.cpp
+    ../service/src/mcp/mcp_manager.cpp
     src/cli/core/cli_app.h
     src/cli/core/cli_app.cpp
     src/cli/config/neurons_config.h
@@ -112,6 +117,7 @@ target_include_directories(cli
     PRIVATE src/
     PRIVATE ../models/src/
     PRIVATE ../compute/src/
+    PRIVATE ../service/src/   # for mcp/mcp_types.h, mcp/mcp_client.h, mcp/mcp_manager.h
 )
 
 # Link libraries
@@ -147,6 +153,6 @@ endif()
 
 # Set executable name
 set_target_properties(cli PROPERTIES
-    OUTPUT_NAME "cli"
+    OUTPUT_NAME "neurons"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

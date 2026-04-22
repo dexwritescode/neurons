@@ -105,6 +105,7 @@ grpc::Status NeuronsServiceImpl::LoadModel(grpc::ServerContext* /*ctx*/,
     resp->set_vocab_size(static_cast<uint32_t>(model_->config().vocab_size));
     resp->set_num_layers(static_cast<uint32_t>(model_->config().num_hidden_layers));
     resp->set_max_position_embeddings(static_cast<uint32_t>(model_->config().max_position_embeddings));
+    resp->set_supports_tool_use(model_->supports_tool_use());
     return grpc::Status::OK;
 }
 
@@ -153,6 +154,7 @@ grpc::Status NeuronsServiceImpl::GetStatus(grpc::ServerContext* /*ctx*/,
         resp->set_num_layers(static_cast<uint32_t>(model_->config().num_hidden_layers));
         resp->set_max_position_embeddings(static_cast<uint32_t>(model_->config().max_position_embeddings));
         resp->set_backend(backend_name);
+        resp->set_supports_tool_use(model_->supports_tool_use());
     }
 
     // Always populate one GpuSlot (the single backend device on this node)
@@ -286,8 +288,8 @@ std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
         return result;
     }
 
-    if (type == "qwen2") {
-        // Qwen2 ChatML template:
+    if (type == "qwen2" || type == "qwen3") {
+        // Qwen2/Qwen3 ChatML template:
         //   <|im_start|>system\n{system}<|im_end|>\n
         //   <|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant}<|im_end|>\n
         //   <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
@@ -462,65 +464,43 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         return grpc::Status::OK;
     }
 
-    // Sampling params (use request values; fall back to sensible defaults)
-    compute::SamplingParams params;
-    if (req->has_params()) {
-        const auto& p = req->params();
-        params.temperature = p.temperature() > 0.0f ? p.temperature() : 0.7f;
-        params.top_p       = p.top_p()       > 0.0f ? p.top_p()       : 0.9f;
-        params.top_k       = p.top_k()       > 0    ? p.top_k()       : 40;
-        params.rep_penalty = p.rep_penalty()  > 0.0f ? p.rep_penalty() : 1.1f;
-    }
-    const int max_tokens = (req->has_params() && req->params().max_tokens() > 0)
-                           ? req->params().max_tokens() : 200;
-    const int ctx_win  = (req->has_params()) ? req->params().context_window() : 0;
-    const int token_budget = (ctx_win > 0) ? ctx_win - max_tokens : 0;
-
-    // Build prompt and tokenize
-    const std::string prompt_str = build_prompt(*mdl, *req, token_budget);
-    const auto& tok = mdl->tokenizer();
-    auto token_ids = tok.encode(prompt_str, /*add_special_tokens=*/true);
-    const uint32_t prompt_token_count = static_cast<uint32_t>(token_ids.size());
-
-    // Streaming generation
-    std::vector<int> gen_so_far;
-    std::string decoded_so_far;
+    // Delegate to generate_internal — this also activates MCP tool use when
+    // connected servers are available.
+    const std::atomic<bool> not_cancelled{false};
+    uint32_t prompt_token_count = 0;
+    uint32_t gen_token_count    = 0;
+    std::string gen_error;
     const auto gen_start = std::chrono::steady_clock::now();
 
-    auto result = mdl->generate(token_ids, static_cast<size_t>(max_tokens), params,
-        [&](int tok_id) -> bool {
+    generate_internal(*req, not_cancelled,
+        [&](const std::string& delta) -> bool {
             if (ctx->IsCancelled()) return false;
-            if (mdl->config().is_eos_token(tok_id)) return false;
-
-            gen_so_far.push_back(tok_id);
-            // Cumulative decode for correct spacing (same pattern as ChatEngine)
-            const std::string new_decoded = tok.decode(gen_so_far);
-            const std::string delta = new_decoded.substr(decoded_so_far.size());
-            decoded_so_far = new_decoded;
-
             neurons::GenerateResponse resp;
             resp.set_token(delta);
             resp.set_done(false);
             writer->Write(resp);
             return true;
-        });
+        },
+        gen_error,
+        &prompt_token_count,
+        &gen_token_count);
 
     // Record tok/s for GetStatus
-    if (!gen_so_far.empty()) {
+    if (gen_token_count > 0) {
         const double elapsed = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - gen_start).count();
         std::lock_guard<std::mutex> lk(model_mutex_);
         last_tok_per_sec_ = elapsed > 0.0
-            ? static_cast<float>(gen_so_far.size() / elapsed) : 0.0f;
+            ? static_cast<float>(gen_token_count / elapsed) : 0.0f;
     }
 
     // Final message with stats
     neurons::GenerateResponse final_resp;
     final_resp.set_done(true);
     final_resp.set_prompt_tokens(prompt_token_count);
-    final_resp.set_gen_tokens(static_cast<uint32_t>(gen_so_far.size()));
-    if (!result.has_value()) {
-        final_resp.set_error("Generation failed: " + result.error().message);
+    final_resp.set_gen_tokens(gen_token_count);
+    if (!gen_error.empty()) {
+        final_resp.set_error(gen_error);
     }
     writer->Write(final_resp);
 
@@ -687,7 +667,8 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
                                             GenerateTokenCb                 cb,
                                             std::string&                    error_out,
                                             uint32_t*                       prompt_tokens_out,
-                                            uint32_t*                       gen_tokens_out) {
+                                            uint32_t*                       gen_tokens_out,
+                                            ToolCallCb                      tool_cb) {
     compute::LanguageModel* mdl = nullptr;
     {
         std::lock_guard<std::mutex> lock(model_mutex_);
@@ -695,18 +676,16 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     }
     if (!mdl) { error_out = "No model loaded"; return false; }
 
-    // Apply model-specific chat template — same logic as gRPC Generate RPC.
+    const std::string session_id = std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+
     const int n_max = (req.has_params() && req.params().max_tokens() > 0)
                       ? req.params().max_tokens() : 200;
-    const int ctx_win     = req.has_params() ? req.params().context_window() : 0;
-    const int tok_budget  = (ctx_win > 0) ? ctx_win - n_max : 0;
-    const std::string prompt = build_prompt(*mdl, req, tok_budget);
+    const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
+    const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 
+    const std::string base_prompt = build_prompt(*mdl, req, tok_budget);
     const auto& tok = mdl->tokenizer();
-    auto token_ids = tok.encode(prompt, /*add_special_tokens=*/true);
-
-    std::vector<int> gen_so_far;
-    std::string decoded_so_far;
 
     compute::SamplingParams params;
     if (req.has_params()) {
@@ -717,25 +696,69 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
         params.rep_penalty = p.rep_penalty()  > 0.0f ? p.rep_penalty() : 1.1f;
     }
 
-    auto result = mdl->generate(token_ids, static_cast<size_t>(n_max), params,
-        [&](int tok_id) -> bool {
-            if (cancelled.load(std::memory_order_relaxed)) return false;
-            if (mdl->config().is_eos_token(tok_id)) return false;
+    // Encode the initial prompt with BOS; tool injections are appended without BOS.
+    std::vector<int> all_tokens = tok.encode(base_prompt, /*add_special_tokens=*/true);
+    if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(all_tokens.size());
 
-            gen_so_far.push_back(tok_id);
-            const std::string new_decoded = tok.decode(gen_so_far);
-            const std::string delta       = new_decoded.substr(decoded_so_far.size());
-            decoded_so_far = new_decoded;
-
-            return cb(delta);
-        });
-
-    if (!result.has_value()) {
-        error_out = "Generation failed: " + result.error().message;
-        return false;
+    // If no explicit callback provided, use the McpManager if tools are available.
+    if (!tool_cb && mcp_manager_.has_active_tools() && mdl->supports_tool_use()) {
+        tool_cb = mcp_manager_.make_tool_call_cb(session_id);
     }
-    if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(token_ids.size());
-    if (gen_tokens_out)    *gen_tokens_out    = static_cast<uint32_t>(gen_so_far.size());
+    const bool can_use_tools = (tool_cb != nullptr) && mdl->supports_tool_use();
+    static constexpr int kMaxToolTurns = 5;
+    uint32_t total_gen = 0;
+
+    for (int turn = 0; turn <= kMaxToolTurns; ++turn) {
+        std::vector<int> gen_so_far;
+        std::string decoded_so_far;
+        std::string accumulated;
+        std::optional<compute::LanguageModel::ToolCall> pending_tool;
+
+        auto result = mdl->generate(all_tokens, static_cast<size_t>(n_max), params,
+            [&](int tok_id) -> bool {
+                if (cancelled.load(std::memory_order_relaxed)) return false;
+                if (mdl->config().is_eos_token(tok_id)) return false;
+
+                gen_so_far.push_back(tok_id);
+                const std::string new_decoded = tok.decode(gen_so_far);
+                const std::string delta = new_decoded.substr(decoded_so_far.size());
+                decoded_so_far = new_decoded;
+                accumulated += delta;
+
+                if (can_use_tools) {
+                    auto tc = mdl->detect_tool_call(accumulated);
+                    if (tc.has_value()) {
+                        pending_tool = std::move(tc);
+                        return false;
+                    }
+                }
+                return cb(delta);
+            });
+
+        total_gen += static_cast<uint32_t>(gen_so_far.size());
+
+        if (!result.has_value()) {
+            error_out = "Generation failed: " + result.error().message;
+            return false;
+        }
+
+        if (!pending_tool || turn == kMaxToolTurns) break;
+
+        // Invoke the tool callback — nullopt means denied.
+        auto tool_result = tool_cb(*pending_tool);
+        const std::string result_json = tool_result.value_or(
+            R"({"error":"Tool call denied"})");
+        const std::string injection = mdl->format_tool_result(
+            pending_tool->name, result_json);
+
+        // Extend the token list with what was generated + the injected result.
+        // No BOS on continuations.
+        all_tokens.insert(all_tokens.end(), gen_so_far.begin(), gen_so_far.end());
+        const std::vector<int> inj_tokens = tok.encode(injection, /*add_special_tokens=*/false);
+        all_tokens.insert(all_tokens.end(), inj_tokens.begin(), inj_tokens.end());
+    }
+
+    if (gen_tokens_out) *gen_tokens_out = total_gen;
     return true;
 }
 

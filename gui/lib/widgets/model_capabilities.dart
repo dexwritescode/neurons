@@ -46,22 +46,29 @@ List<ModelCap> inferCapabilities(String modelName, String modelType) {
   }
 
   // Tool / function calling.
-  // Covers models whose names don't say "tool" but are well-known to support it.
-  final _llama3 = RegExp(r'llama-?3');
-  final _qwen2  = RegExp(r'qwen-?2');
-  if (n.contains('tool') || n.contains('function') ||
+  // modelType wins when available (authoritative from C++ after load).
+  // Fall back to name heuristics for unloaded / browse-screen models.
+  final llama31 = RegExp(r'llama-?3\.?[1-9]');
+  final qwen2   = RegExp(r'qwen-?2');
+  final qwen3   = RegExp(r'qwen-?3');
+  final bool toolByType = modelType == 'qwen2' ||
+      modelType == 'qwen3' ||
+      modelType == 'mistral' ||
+      modelType == 'llama';
+  final bool toolByName =
+      n.contains('tool') || n.contains('function') ||
       n.contains('hermes') || n.contains('functionary') ||
       n.contains('xlam') || n.contains('nexusraven') ||
-      // Mistral / Mixtral / Ministral — all instruct variants support tools
-      n.contains('mistral') || n.contains('mixtral') || n.contains('ministral') ||
-      // Llama 3.x instruct (not Llama 2)
-      _llama3.hasMatch(n) ||
-      // Qwen 2+ instruct
-      _qwen2.hasMatch(n) ||
-      // DeepSeek V2/V3 chat (R1 is reasoning, not tool-call focused)
-      (n.contains('deepseek') && !n.contains('-r1') && !n.contains('r2'))) {
-    caps.add(ModelCap.toolUse);
-  }
+      // Mistral / Mixtral / Ministral instruct variants
+      (n.contains('instruct') &&
+          (n.contains('mistral') || n.contains('mixtral') || n.contains('ministral'))) ||
+      // Llama 3.1+ instruct (not Llama 2, not base Llama 3.0)
+      (llama31.hasMatch(n) && n.contains('instruct')) ||
+      // Qwen 2+ / 3 instruct
+      ((qwen2.hasMatch(n) || qwen3.hasMatch(n)) && n.contains('instruct')) ||
+      // DeepSeek V2/V3 chat (not R1 reasoning)
+      (n.contains('deepseek') && !n.contains('-r1') && !n.contains('r2'));
+  if (toolByType || toolByName) caps.add(ModelCap.toolUse);
 
   return caps;
 }

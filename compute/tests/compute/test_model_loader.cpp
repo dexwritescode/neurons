@@ -141,8 +141,8 @@ protected:
 };
 
 TEST_F(ModelLoaderTest, LoadConfigOnly) {
-    ASSERT_TRUE(std::filesystem::exists(tinyllama_model_dir))
-        << "TinyLlama model directory not found: " << tinyllama_model_dir;
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
 
     auto result = ModelLoader::load_config(tinyllama_model_dir);
     ASSERT_TRUE(result.has_value())
@@ -174,8 +174,8 @@ TEST_F(ModelLoaderTest, LoadConfigMissingConfigFile) {
 }
 
 TEST_F(ModelLoaderTest, FindSafetensorsFiles) {
-    ASSERT_TRUE(std::filesystem::exists(tinyllama_model_dir))
-        << "TinyLlama model directory not found: " << tinyllama_model_dir;
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
 
     // This tests file discovery indirectly by checking that load_model finds the files
     // We'll use a mock backend that claims to be something other than MLX
@@ -290,8 +290,8 @@ TEST_F(ModelLoaderTest, LoadCompleteModelWithMLX) {
         GTEST_SKIP() << "MLX backend not available";
     }
 
-    ASSERT_TRUE(std::filesystem::exists(tinyllama_model_dir))
-        << "TinyLlama model directory not found: " << tinyllama_model_dir;
+    if (!std::filesystem::exists(tinyllama_model_dir))
+        GTEST_SKIP() << "Model not found: " << tinyllama_model_dir;
 
     ASSERT_NE(backend, nullptr) << "MLX backend not initialized";
 

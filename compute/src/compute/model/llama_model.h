@@ -49,6 +49,13 @@ public:
     ComputeBackend*           backend()        const override { return backend_; }
     size_t                    num_parameters() const override;
 
+    // ── Tool-use (LanguageModel overrides) ───────────────────────────────────
+    bool                     supports_tool_use()          const override;
+    std::string              format_tool_system_prompt(const std::string& tools_json) const override;
+    std::optional<ToolCall>  detect_tool_call(const std::string& text) const override;
+    std::string              format_tool_result(const std::string& tool_name,
+                                                const std::string& result_json) const override;
+
     // ── Testing / diagnostic interface ───────────────────────────────────────
     // (Not part of LanguageModel — used by unit tests only via LlamaModel& or TinyLlamaInference&)
 
@@ -95,10 +102,16 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────────
 
+    // Detected at construction via tokenizer vocab probe.
+    enum class ToolFamily { None, Qwen25, Llama31, MistralTool };
+    static ToolFamily detect_tool_family(const SimpleBpeTokenizer& tok,
+                                         const ModelConfig& cfg);
+
     ModelConfig                              config_;
     SimpleBpeTokenizer                       tokenizer_;
     std::unordered_map<std::string, Tensor>  weights_;
     ComputeBackend*                          backend_;
+    ToolFamily                               tool_family_ = ToolFamily::None;
 
     std::vector<LayerKVCache>         kv_cache_;
     size_t                            cache_position_ = 0;
