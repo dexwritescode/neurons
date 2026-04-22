@@ -118,6 +118,8 @@ cd neurons
 
 All C++ + Flutter targets are driven from the root `Makefile`:
 
+Integration tests require model files and skip automatically when absent — see [`docs/models.md`](docs/models.md) for the full list and download commands.
+
 ```bash
 make help          # list all targets
 

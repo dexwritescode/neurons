@@ -89,5 +89,6 @@ models/build/
 .claude/
 *.md
 !README.md
+!docs/**/*.md
 .idea/
 cmake-build-debug/
