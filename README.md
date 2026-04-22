@@ -35,6 +35,9 @@ The GUI never links C++ directly. Locally it calls `libneurons_core.dylib` over 
 | Multi-node management | ✅ | ✅ | — |
 | OpenAI-compatible HTTP endpoint | — | ✅ | — |
 | Remote log streaming | ✅ | — | ✅ |
+| MCP server management (add/remove/list/push) | 🚧 | 🚧 | ✅ |
+| MCP permission rules (global/session/chat scopes) | 🚧 | 🚧 | ✅ |
+| MCP tool approval flow (always_ask / always_allow / always_deny) | 🚧 | 🚧 | ✅ |
 
 ---
 
@@ -234,7 +237,10 @@ Neurons/
 | G–I | ✅ | gRPC service, Flutter GUI, CLI, OpenAI HTTP, logging |
 | J | 🚧 | File attach + RAG (embeddings, sqlite-vec) |
 | K | 🚧 | Multi-node: routing, speculative decoding, failover |
-| L | 🚧 | MCP client + tool use (filesystem, shell, custom servers) |
+| L.1–2 | ✅ | MCP client runtime — stdio/SSE transport, JSON-RPC 2.0, McpManager |
+| L.3 | ✅ | MCP gRPC extensions — server/permission RPCs, tool approval flow |
+| L.4–6 | 🚧 | MCP GUI — settings, permissions table, live approval prompt |
+| L.8 | 🚧 | Built-in MCP servers (filesystem, shell) |
 | B/C | 🚧 | CUDA (cuBLAS + flash-attention) and ROCm backends |
 
 ---
