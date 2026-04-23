@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 // ignore_for_file: use_build_context_synchronously
 
 import '../services/app_state.dart';
-import '../proto/neurons.pb.dart' show ToolApprovalRequest;
+import '../proto/neurons.pb.dart' show McpServerConfig, ToolApprovalRequest;
 import '../theme/tokens.dart';
 import '../widgets/blinking_cursor.dart';
 import '../widgets/resize_divider.dart';
@@ -164,6 +164,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 modelLoaded: state.modelLoaded,
                 onSend: () => _send(state),
                 onStop: state.cancelGeneration,
+                supportsToolUse: state.supportsToolUse,
+                mcpServers: state.mcpServers,
+                activeServerNames: state.activeServerNames,
+                onToggleServer: state.toggleActiveServer,
               ),
             ],
           ),
@@ -623,19 +627,40 @@ class _MessageRowState extends State<_MessageRow> {
                   children: [
                     Flexible(
                       child: SelectableText(
-                        widget.message.content.isEmpty
+                        widget.message.content.isEmpty &&
+                                widget.message.toolCalls.isEmpty
                             ? '…'
                             : widget.message.content,
                         style: const TextStyle(
                             fontSize: 14, color: Tokens.textPrimary, height: 1.72),
                       ),
                     ),
-                    if (widget.isLastMessage && widget.isGenerating) ...[
+                    if (widget.isLastMessage &&
+                        widget.isGenerating &&
+                        widget.message.toolCalls.isEmpty) ...[
                       const SizedBox(width: 2),
                       const BlinkingCursor(),
                     ],
                   ],
                 ),
+                if (widget.message.toolCalls.isNotEmpty) ...[
+                  ...() {
+                    final pending = widget.state.pendingApproval;
+                    return widget.message.toolCalls.map((r) {
+                      final isWaiting = pending != null &&
+                          r.resultJson == null &&
+                          r.server == pending.server &&
+                          r.tool == pending.tool;
+                      return _ToolCallBlock(
+                          record: r, isWaitingApproval: isWaiting);
+                    });
+                  }(),
+                  if (widget.isLastMessage && widget.isGenerating)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: BlinkingCursor(),
+                    ),
+                ],
               ],
             ),
           ),
@@ -675,6 +700,10 @@ class _InputBar extends StatelessWidget {
     required this.modelLoaded,
     required this.onSend,
     required this.onStop,
+    this.supportsToolUse = false,
+    this.mcpServers = const [],
+    this.activeServerNames = const {},
+    this.onToggleServer,
   });
 
   final TextEditingController controller;
@@ -682,16 +711,78 @@ class _InputBar extends StatelessWidget {
   final bool modelLoaded;
   final VoidCallback onSend;
   final VoidCallback onStop;
+  final bool supportsToolUse;
+  final List<McpServerConfig> mcpServers;
+  final Set<String> activeServerNames;
+  final void Function(String)? onToggleServer;
+
+  void _showToolsSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Tokens.surfaceElevated,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      builder: (_) => Consumer<AppState>(
+        builder: (ctx, state, _) => _ToolsSheet(
+          mcpServers: state.mcpServers,
+          activeServerNames: state.activeServerNames,
+          onToggle: state.toggleActiveServer,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final showToolsButton = supportsToolUse && mcpServers.isNotEmpty;
+    final activeCount = activeServerNames.intersection(
+        mcpServers.map((s) => s.name).toSet()).length;
+
     return Container(
       decoration: const BoxDecoration(
         color: Tokens.surface,
         border: Border(top: BorderSide(color: Tokens.glassEdge)),
       ),
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (showToolsButton) ...[
+            GestureDetector(
+              onTap: () => _showToolsSheet(context),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: activeCount > 0 ? Tokens.accentDim : Tokens.surfaceElevated,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: activeCount > 0
+                        ? Tokens.accent.withAlpha(80)
+                        : Tokens.glassEdge,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.build_outlined, size: 11,
+                        color: activeCount > 0 ? Tokens.accent : Tokens.textMuted),
+                    const SizedBox(width: 5),
+                    Text(
+                      activeCount > 0 ? '$activeCount tool${activeCount == 1 ? '' : 's'} active' : 'Tools',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: activeCount > 0 ? Tokens.accent : Tokens.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
@@ -786,6 +877,8 @@ class _InputBar extends StatelessWidget {
                       ),
               );
             },
+          ),
+        ],
           ),
         ],
       ),
@@ -970,6 +1063,215 @@ class _ApproveButton extends StatelessWidget {
               fontWeight: primary ? FontWeight.w600 : FontWeight.w400,
               color: fg,
             )),
+      ),
+    );
+  }
+}
+
+// ── Tools sheet ───────────────────────────────────────────────────────────────
+
+class _ToolsSheet extends StatelessWidget {
+  const _ToolsSheet({
+    required this.mcpServers,
+    required this.activeServerNames,
+    required this.onToggle,
+  });
+  final List<McpServerConfig> mcpServers;
+  final Set<String> activeServerNames;
+  final void Function(String) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.build_outlined, size: 14, color: Tokens.textMuted),
+                const SizedBox(width: 8),
+                const Text(
+                  'TOOLS FOR THIS CHAT',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Tokens.textMuted,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Tokens.glassEdge),
+          ...mcpServers.map((server) {
+            final active = activeServerNames.contains(server.name);
+            return SwitchListTile(
+              value: active,
+              onChanged: server.enabled ? (v) => onToggle(server.name) : null,
+              title: Text(
+                server.name,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: server.enabled ? Tokens.textPrimary : Tokens.textMuted,
+                ),
+              ),
+              subtitle: Text(
+                server.transport.toUpperCase(),
+                style: const TextStyle(fontSize: 11, color: Tokens.textMuted),
+              ),
+              activeColor: Tokens.accent,
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+            );
+          }),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Tool call block ───────────────────────────────────────────────────────────
+
+class _ToolCallBlock extends StatefulWidget {
+  const _ToolCallBlock({required this.record, this.isWaitingApproval = false});
+  final ToolCallRecord record;
+  final bool isWaitingApproval;
+
+  @override
+  State<_ToolCallBlock> createState() => _ToolCallBlockState();
+}
+
+class _ToolCallBlockState extends State<_ToolCallBlock> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.record;
+    final isDone = r.resultJson != null;
+    final isWaiting = widget.isWaitingApproval;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      decoration: BoxDecoration(
+        color: isWaiting
+            ? Tokens.destructive.withAlpha(10)
+            : Tokens.surfaceElevated,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: isWaiting ? Tokens.destructive.withAlpha(60) : Tokens.glassEdge,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: isDone ? () => setState(() => _expanded = !_expanded) : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  Icon(
+                    r.error
+                        ? Icons.error_outline_rounded
+                        : isDone
+                            ? Icons.check_circle_outline_rounded
+                            : isWaiting
+                                ? Icons.pending_outlined
+                                : Icons.sync_rounded,
+                    size: 12,
+                    color: r.error
+                        ? Tokens.destructive
+                        : isDone
+                            ? Tokens.accent
+                            : isWaiting
+                                ? Tokens.destructive.withAlpha(180)
+                                : Tokens.textMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${r.server} · ${r.tool}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Tokens.textSecondary,
+                      fontFamily: 'JetBrains Mono',
+                    ),
+                  ),
+                  if (isWaiting) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      'Awaiting approval…',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Tokens.destructive.withAlpha(180),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ] else if (isDone && !r.error) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      '${r.elapsedMs}ms',
+                      style: const TextStyle(fontSize: 10, color: Tokens.textMuted),
+                    ),
+                  ],
+                  const Spacer(),
+                  if (isDone)
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 13,
+                      color: Tokens.textMuted,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded && isDone) ...[
+            const Divider(height: 1, color: Tokens.glassEdge),
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (r.argsJson.isNotEmpty) ...[
+                    const Text('Args',
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: Tokens.textMuted,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 3),
+                    SelectableText(
+                      r.argsJson,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          color: Tokens.textPrimary,
+                          fontFamily: 'JetBrains Mono',
+                          height: 1.5),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  const Text('Result',
+                      style: TextStyle(
+                          fontSize: 10,
+                          color: Tokens.textMuted,
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 3),
+                  SelectableText(
+                    r.resultJson ?? '',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: r.error ? Tokens.destructive : Tokens.textPrimary,
+                      fontFamily: 'JetBrains Mono',
+                      height: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
