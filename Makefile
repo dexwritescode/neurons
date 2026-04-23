@@ -52,7 +52,7 @@ dylib: _configure ## Build + stage libneurons_core.dylib for Flutter FFI
 	@echo "==> Installing dylib to $(STAGING_DIR)"
 	cmake --install $(BUILD_DIR) --component neurons_core --prefix $(STAGING_DIR)
 	@for cfg in Debug Release Profile; do \
-	    dest="$(GUI_DIR)/build/macos/Build/Products/$$cfg/neurons_gui.app/Contents/MacOS"; \
+	    dest="$(GUI_DIR)/build/macos/Build/Products/$$cfg/Neurons.app/Contents/MacOS"; \
 	    if [ -d "$$dest" ]; then \
 	        cp $(STAGED_DYLIB) "$$dest/libneurons_core.dylib"; \
 	        echo "==> Copied into $$cfg bundle"; \
