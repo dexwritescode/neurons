@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#121A0C"/>
+      <stop offset="100%" stop-color="#080C06"/>
+    </radialGradient>
+    <radialGradient id="center" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="30%" stop-color="#C8FF60"/>
+      <stop offset="100%" stop-color="#3A9910"/>
+    </radialGradient>
+    <radialGradient id="outer" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#AAFF44"/>
+      <stop offset="100%" stop-color="#286E0A"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softglow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+
+  <!-- Subtle ring halos -->
+  <circle cx="512" cy="512" r="205" fill="none" stroke="#4AB820" stroke-width="2" opacity="0.12"/>
+  <circle cx="512" cy="512" r="315" fill="none" stroke="#4AB820" stroke-width="1" opacity="0.07"/>
+
+  <!--
+    Outer nodes — hexagonal base angles, each arm stretched a different length
+    to break symmetry. Sizes also vary.
+
+    Angles (clockwise from top): 0°, 60°, 120°, 180°, 240°, 300°
+    sin/cos pairs:
+      0°   → (0,      -1   )
+      60°  → (0.866,  -0.5 )
+      120° → (0.866,   0.5 )
+      180° → (0,       1   )
+      240° → (-0.866,  0.5 )
+      300° → (-0.866, -0.5 )
+
+    Distances: 270, 325, 290, 345, 255, 310
+    Center: (512, 512)
+  -->
+
+  <!-- Connections (drawn first, nodes sit on top) -->
+  <!-- 0°  r=270 → (512, 242) -->
+  <line x1="512" y1="512" x2="512" y2="242"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+  <!-- 60°  r=325 → (793, 350) -->
+  <line x1="512" y1="512" x2="793" y2="350"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+  <!-- 120° r=290 → (763, 657) -->
+  <line x1="512" y1="512" x2="763" y2="657"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+  <!-- 180° r=345 → (512, 857) -->
+  <line x1="512" y1="512" x2="512" y2="857"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+  <!-- 240° r=255 → (291, 640) -->
+  <line x1="512" y1="512" x2="291" y2="640"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+  <!-- 300° r=310 → (243, 357) -->
+  <line x1="512" y1="512" x2="243" y2="357"
+        stroke="#5EC42A" stroke-width="6" opacity="0.5" stroke-linecap="round"/>
+
+  <!-- Outer nodes (varied sizes: 52, 38, 62, 44, 56, 40) -->
+  <circle cx="512" cy="242" r="52" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+  <circle cx="793" cy="350" r="38" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+  <circle cx="763" cy="657" r="62" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+  <circle cx="512" cy="857" r="44" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+  <circle cx="291" cy="640" r="56" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+  <circle cx="243" cy="357" r="40" fill="url(#outer)" filter="url(#glow)" opacity="0.93"/>
+
+  <!-- Center node -->
+  <circle cx="512" cy="512" r="108" fill="url(#center)" filter="url(#softglow)"/>
+</svg>
