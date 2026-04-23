@@ -1,28 +1,56 @@
 name: GUI Test
 
 on:
-  workflow_run:
-    workflows: [ "Build" ]
-    types: [ completed ]
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
 
 concurrency:
-  group: gui-test-${{ github.event.workflow_run.head_sha }}
+  group: gui-test-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   gui-test:
     runs-on: macos-26
-    if: github.event.workflow_run.conclusion == 'success'
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+
+      - name: Cache Flutter pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('gui/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-protobuf-v1
+          restore-keys: brew-${{ runner.os }}-
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Install protoc-gen-dart
+        run: dart pub global activate protoc_plugin
+
+      - name: Generate Dart proto stubs
+        run: bash scripts/gen_proto.sh
 
       - name: GUI tests
         run: cd gui && flutter test

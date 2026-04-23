@@ -290,7 +290,6 @@ class AppState extends ChangeNotifier {
   Future<void> _initSessions() async {
     sessions = await _chatRepo.loadAll();
     if (sessions.isEmpty) {
-      _activeSession = ChatSession.create();
       sessions.add(_activeSession);
     } else {
       _activeSession = sessions.first;

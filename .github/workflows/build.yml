@@ -23,28 +23,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-grpc-v1
+          restore-keys: brew-${{ runner.os }}-
+
       - name: Install gRPC + Protobuf
         run: brew install grpc
 
-      - name: Cache CMake dependencies
+      - name: Cache CMake fetched dependencies
         uses: actions/cache@v4
         with:
           path: build/_deps
           key: cmake-deps-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
           restore-keys: cmake-deps-${{ runner.os }}-
 
+      - name: Cache CMake build objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            !build/_deps
+          key: cmake-build-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', 'compute/src/**', 'service/src/**', 'models/src/**', 'cli/src/**') }}
+          restore-keys: cmake-build-${{ runner.os }}-
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
-        run: cmake --build build --target all-tests -j$(sysctl -n hw.logicalcpu)
-
-      - name: Upload test binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-binaries-${{ github.sha }}
-          path: |
-            build/compute/compute_tests
-            build/service/service_tests
-            build/models/model_tests
-          retention-days: 1
+        run: cmake --build build -j$(sysctl -n hw.logicalcpu)
