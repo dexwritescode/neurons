@@ -114,6 +114,20 @@ brew install cmake grpc protobuf
 
 ---
 
+## Download (pre-built macOS app)
+
+Pre-built `.dmg` files for Apple Silicon are attached to each [GitHub Release](https://github.com/dexwritescode/neurons/releases).
+
+1. Download `Neurons-<version>-arm64.dmg` from the latest release.
+2. Open the DMG and drag **Neurons.app** to `/Applications`.
+3. On first launch macOS will block the app (unsigned binary). To allow it:
+   - Right-click `Neurons.app` → **Open** → **Open** in the dialog, **or**
+   - Run once in Terminal: `xattr -dr com.apple.quarantine /Applications/Neurons.app`
+
+The app requires macOS 14 (Sonoma) or later on Apple Silicon.
+
+---
+
 ## Building
 
 ```bash
