@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_state.dart';
+import '../proto/neurons.pb.dart' show McpServerConfig;
 import '../screens/chat_screen.dart';
 import '../screens/model_picker_screen.dart';
 import '../screens/model_browser_screen.dart';
@@ -482,6 +483,10 @@ class _SettingsPanelState extends State<_SettingsPanel> {
               const SizedBox(height: 32),
               const Divider(color: Tokens.glassEdge),
               const SizedBox(height: 32),
+              const _McpServersSection(),
+              const SizedBox(height: 32),
+              const Divider(color: Tokens.glassEdge),
+              const SizedBox(height: 32),
               const Text('CONNECTION',
                   style: TextStyle(
                     fontSize: 10, fontWeight: FontWeight.w700,
@@ -741,6 +746,456 @@ class _OpenAiSection extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+// ── MCP servers section (inside Settings) ────────────────────────────────────
+
+class _McpServersSection extends StatelessWidget {
+  const _McpServersSection();
+
+  void _showAddDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _AddMcpServerDialog(
+        onSave: (server) => context.read<AppState>().addMcpServer(server),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final servers = context.watch<AppState>().mcpServers;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text('MCP SERVERS',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: Tokens.textMuted,
+                  letterSpacing: 1.1,
+                )),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: () => _showAddDialog(context),
+              icon: const Icon(Icons.add_rounded, size: 13),
+              label: const Text('Add', style: TextStyle(fontSize: 12)),
+              style: TextButton.styleFrom(
+                foregroundColor: Tokens.accent,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (servers.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Tokens.surface,
+              borderRadius: BorderRadius.circular(Tokens.radiusInput),
+              border: Border.all(color: Tokens.glassEdge),
+            ),
+            child: const Text('No servers configured',
+                style: TextStyle(fontSize: 12, color: Tokens.textMuted)),
+          )
+        else
+          ...servers.map((s) => _McpServerRow(server: s)),
+        const SizedBox(height: 8),
+        const Text(
+          'MCP servers give the model access to tools like filesystem, shell, and web search.',
+          style: TextStyle(fontSize: 11, color: Tokens.textMuted),
+        ),
+      ],
+    );
+  }
+}
+
+class _McpServerRow extends StatelessWidget {
+  const _McpServerRow({required this.server});
+  final McpServerConfig server;
+
+  @override
+  Widget build(BuildContext context) {
+    final isStdio = server.transport == 'stdio';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Tokens.surface,
+        borderRadius: BorderRadius.circular(Tokens.radiusInput),
+        border: Border.all(color: Tokens.glassEdge),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              color: Tokens.accentDim,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              isStdio ? 'STDIO' : 'SSE',
+              style: const TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                color: Tokens.accent,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              server.name,
+              style: const TextStyle(fontSize: 13, color: Tokens.textPrimary),
+            ),
+          ),
+          if (!server.enabled)
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Text('disabled',
+                  style: TextStyle(fontSize: 11, color: Tokens.textMuted)),
+            ),
+          IconButton(
+            onPressed: () =>
+                context.read<AppState>().removeMcpServer(server.name),
+            icon: const Icon(Icons.delete_outline_rounded, size: 15),
+            color: Tokens.destructive,
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Remove',
+            padding: EdgeInsets.zero,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Add MCP server dialog ─────────────────────────────────────────────────────
+
+class _AddMcpServerDialog extends StatefulWidget {
+  const _AddMcpServerDialog({required this.onSave});
+  final Future<void> Function(McpServerConfig) onSave;
+
+  @override
+  State<_AddMcpServerDialog> createState() => _AddMcpServerDialogState();
+}
+
+class _AddMcpServerDialogState extends State<_AddMcpServerDialog> {
+  final _nameCtrl    = TextEditingController();
+  final _commandCtrl = TextEditingController();
+  final _argsCtrl    = TextEditingController();
+  final _urlCtrl     = TextEditingController();
+  String _transport  = 'stdio';
+  bool   _enabled    = true;
+  bool   _saving     = false;
+  String? _error;
+  final List<(TextEditingController, TextEditingController)> _envPairs = [];
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _commandCtrl.dispose();
+    _argsCtrl.dispose();
+    _urlCtrl.dispose();
+    for (final (k, v) in _envPairs) {
+      k.dispose();
+      v.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'Name is required.');
+      return;
+    }
+    if (_transport == 'stdio' && _commandCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Command is required for stdio transport.');
+      return;
+    }
+    if (_transport == 'sse' && _urlCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'URL is required for SSE transport.');
+      return;
+    }
+    final env = <String, String>{
+      for (final (k, v) in _envPairs)
+        if (k.text.trim().isNotEmpty) k.text.trim(): v.text,
+    };
+    final args = _argsCtrl.text.trim().isEmpty
+        ? <String>[]
+        : _argsCtrl.text.trim().split(RegExp(r'\s+')).toList();
+    final server = McpServerConfig(
+      name: name,
+      transport: _transport,
+      command: _transport == 'stdio' ? _commandCtrl.text.trim() : '',
+      args: _transport == 'stdio' ? args : [],
+      url: _transport == 'sse' ? _urlCtrl.text.trim() : '',
+      env: env.entries,
+      enabled: _enabled,
+    );
+    setState(() { _saving = true; _error = null; });
+    try {
+      await widget.onSave(server);
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() { _saving = false; _error = e.toString(); });
+    }
+  }
+
+  void _addEnvPair() =>
+      setState(() => _envPairs.add((TextEditingController(), TextEditingController())));
+
+  void _removeEnvPair(int i) {
+    final (k, v) = _envPairs.removeAt(i);
+    k.dispose();
+    v.dispose();
+    setState(() {});
+  }
+
+  InputDecoration _dec(String hint) => InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Tokens.textMuted),
+        filled: true,
+        fillColor: Tokens.surfaceElevated,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Tokens.radiusInput),
+          borderSide: const BorderSide(color: Tokens.glassEdge),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Tokens.radiusInput),
+          borderSide: const BorderSide(color: Tokens.glassEdge),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Tokens.radiusInput),
+          borderSide: const BorderSide(color: Tokens.accent),
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Tokens.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Tokens.glassEdge),
+      ),
+      child: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Add MCP Server',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: Tokens.textPrimary,
+                  )),
+              const SizedBox(height: 20),
+
+              // Name
+              const Text('NAME',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                      color: Tokens.textMuted, letterSpacing: 0.7)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _nameCtrl,
+                style: const TextStyle(fontSize: 13, color: Tokens.textPrimary),
+                decoration: _dec('e.g. filesystem'),
+              ),
+              const SizedBox(height: 16),
+
+              // Transport
+              const Text('TRANSPORT',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                      color: Tokens.textMuted, letterSpacing: 0.7)),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'stdio', label: Text('stdio')),
+                  ButtonSegment(value: 'sse',   label: Text('SSE')),
+                ],
+                selected: {_transport},
+                onSelectionChanged: (s) =>
+                    setState(() => _transport = s.first),
+                style: ButtonStyle(
+                  textStyle: WidgetStateProperty.all(
+                      const TextStyle(fontSize: 12)),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // stdio fields
+              if (_transport == 'stdio') ...[
+                const Text('COMMAND',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: Tokens.textMuted, letterSpacing: 0.7)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _commandCtrl,
+                  style: const TextStyle(fontSize: 13, color: Tokens.textPrimary,
+                      fontFamily: 'JetBrains Mono'),
+                  decoration: _dec('npx'),
+                ),
+                const SizedBox(height: 12),
+                const Text('ARGS',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: Tokens.textMuted, letterSpacing: 0.7)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _argsCtrl,
+                  style: const TextStyle(fontSize: 13, color: Tokens.textPrimary,
+                      fontFamily: 'JetBrains Mono'),
+                  decoration: _dec('-y @modelcontextprotocol/server-filesystem /'),
+                ),
+                const SizedBox(height: 4),
+                const Text('Space-separated arguments.',
+                    style: TextStyle(fontSize: 11, color: Tokens.textMuted)),
+                const SizedBox(height: 4),
+              ],
+
+              // sse field
+              if (_transport == 'sse') ...[
+                const Text('URL',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: Tokens.textMuted, letterSpacing: 0.7)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _urlCtrl,
+                  style: const TextStyle(fontSize: 13, color: Tokens.textPrimary,
+                      fontFamily: 'JetBrains Mono'),
+                  decoration: _dec('http://localhost:3001/sse'),
+                ),
+                const SizedBox(height: 4),
+              ],
+
+              // Env vars
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('ENV VARS',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: Tokens.textMuted, letterSpacing: 0.7)),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _addEnvPair,
+                    icon: const Icon(Icons.add_rounded, size: 13),
+                    label: const Text('Add', style: TextStyle(fontSize: 11)),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Tokens.accent,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      minimumSize: Size.zero,
+                    ),
+                  ),
+                ],
+              ),
+              ..._envPairs.indexed.map(
+                  ((int, (TextEditingController, TextEditingController)) e) {
+                final i = e.$1;
+                final (k, v) = e.$2;
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: k,
+                          style: const TextStyle(fontSize: 12,
+                              color: Tokens.textPrimary,
+                              fontFamily: 'JetBrains Mono'),
+                          decoration: _dec('KEY'),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        flex: 2,
+                        child: TextField(
+                          controller: v,
+                          style: const TextStyle(fontSize: 12,
+                              color: Tokens.textPrimary,
+                              fontFamily: 'JetBrains Mono'),
+                          decoration: _dec('value'),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => _removeEnvPair(i),
+                        icon: const Icon(Icons.close_rounded, size: 14),
+                        color: Tokens.textMuted,
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.only(left: 6),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+
+              const SizedBox(height: 16),
+              // Enabled toggle
+              Row(
+                children: [
+                  const Text('ENABLED',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: Tokens.textMuted, letterSpacing: 0.7)),
+                  const Spacer(),
+                  Switch(
+                    value: _enabled,
+                    onChanged: (v) => setState(() => _enabled = v),
+                    activeColor: Tokens.accent,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ],
+              ),
+
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!,
+                    style: const TextStyle(
+                        fontSize: 12, color: Tokens.destructive)),
+              ],
+              const SizedBox(height: 24),
+
+              Row(
+                children: [
+                  OutlinedButton(
+                    onPressed: _saving ? null : () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Tokens.textSecondary,
+                      side: const BorderSide(color: Tokens.glassEdge),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _saving ? null : _save,
+                    child: _saving
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Text('Add Server'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

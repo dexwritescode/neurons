@@ -405,6 +405,27 @@ class AppState extends ChangeNotifier {
 
   bool get modelLoaded => modelPath != null;
 
+  // ── MCP servers ──────────────────────────────────────────────────────────
+  List<proto.McpServerConfig> mcpServers = [];
+
+  Future<void> loadMcpServers() async {
+    try {
+      final resp = await _client.listMcpServers();
+      mcpServers = resp.servers.toList();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> addMcpServer(proto.McpServerConfig server) async {
+    await _client.addMcpServer(server);
+    await loadMcpServers();
+  }
+
+  Future<void> removeMcpServer(String name) async {
+    await _client.removeMcpServer(name);
+    await loadMcpServers();
+  }
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   /// Connect to the inference service.
@@ -426,6 +447,7 @@ class AppState extends ChangeNotifier {
       final status = await _client.getStatus();
       connectionState = ServiceConnectionState.connected;
       _applyStatus(status);
+      unawaited(loadMcpServers());
     } catch (e) {
       connectionState = ServiceConnectionState.error;
       statusError = e.toString();

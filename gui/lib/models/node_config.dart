@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+enum McpMode { inherit, own }
+
 class NodeConfig {
   NodeConfig({
     required this.id,
@@ -8,6 +10,7 @@ class NodeConfig {
     required this.port,
     this.isLocal = false,
     this.hfToken,  // null = inherit global token
+    this.mcpMode = McpMode.inherit,
   });
 
   final String id;
@@ -16,6 +19,7 @@ class NodeConfig {
   int port;
   final bool isLocal;
   final String? hfToken;
+  final McpMode mcpMode;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -24,6 +28,7 @@ class NodeConfig {
         'port': port,
         'isLocal': isLocal,
         if (hfToken != null) 'hfToken': hfToken,
+        'mcpMode': mcpMode.name,
       };
 
   factory NodeConfig.fromJson(Map<String, dynamic> m) => NodeConfig(
@@ -33,6 +38,7 @@ class NodeConfig {
         port: m['port'] as int,
         isLocal: m['isLocal'] as bool? ?? false,
         hfToken: m['hfToken'] as String?,
+        mcpMode: McpMode.values.byName(m['mcpMode'] as String? ?? 'inherit'),
       );
 
   static NodeConfig local() => NodeConfig(
@@ -53,13 +59,21 @@ class NodeConfig {
 
   // Use copyWith(hfToken: '') to explicitly clear a per-node token.
   // Use copyWith() without hfToken to leave it unchanged.
-  NodeConfig copyWith({String? name, String? host, int? port, Object? hfToken = _sentinel}) => NodeConfig(
+  NodeConfig copyWith({
+    String? name,
+    String? host,
+    int? port,
+    Object? hfToken = _sentinel,
+    McpMode? mcpMode,
+  }) =>
+      NodeConfig(
         id: id,
         name: name ?? this.name,
         host: host ?? this.host,
         port: port ?? this.port,
         isLocal: isLocal,
         hfToken: hfToken == _sentinel ? this.hfToken : hfToken as String?,
+        mcpMode: mcpMode ?? this.mcpMode,
       );
 
   static const Object _sentinel = Object();
