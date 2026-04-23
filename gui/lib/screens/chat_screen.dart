@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 // ignore_for_file: use_build_context_synchronously
 
 import '../services/app_state.dart';
+import '../proto/neurons.pb.dart' show ToolApprovalRequest;
 import '../theme/tokens.dart';
 import '../widgets/blinking_cursor.dart';
 import '../widgets/resize_divider.dart';
@@ -142,6 +143,20 @@ class _ChatScreenState extends State<ChatScreen> {
                   isGenerating: state.isGenerating,
                   genStartTime: _genStartTime,
                 ),
+              // Approval bar (slides in when a tool call needs approval)
+              AnimatedSwitcher(
+                duration: Tokens.fast,
+                child: state.pendingApproval != null
+                    ? _ApprovalBar(
+                        key: ValueKey(state.pendingApproval!.approvalId),
+                        approval: state.pendingApproval!,
+                        onRespond: (approved, newPermission) => state
+                            .respondApproval(state.pendingApproval!.approvalId,
+                                approved,
+                                newPermission: newPermission),
+                      )
+                    : const SizedBox.shrink(),
+              ),
               // Input bar
               _InputBar(
                 controller: _inputCtrl,
@@ -773,6 +788,188 @@ class _InputBar extends StatelessWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Tool approval bar ─────────────────────────────────────────────────────────
+
+class _ApprovalBar extends StatelessWidget {
+  const _ApprovalBar({
+    super.key,
+    required this.approval,
+    required this.onRespond,
+  });
+  final ToolApprovalRequest approval;
+  final void Function(bool approved, String newPermission) onRespond;
+
+  String get _argsPreview {
+    final raw = approval.argsJson;
+    if (raw.isEmpty) return '';
+    return raw.length > 80 ? '${raw.substring(0, 80)}…' : raw;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDestructive = approval.destructive;
+    final barColor = isDestructive
+        ? Tokens.destructive.withAlpha(18)
+        : Tokens.accentDim;
+    final borderColor = isDestructive
+        ? Tokens.destructive.withAlpha(80)
+        : Tokens.accent.withAlpha(60);
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: barColor,
+        borderRadius: BorderRadius.circular(Tokens.radiusInput),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Tool identity row
+          Row(
+            children: [
+              Icon(
+                Icons.build_circle_outlined,
+                size: 13,
+                color: isDestructive ? Tokens.destructive : Tokens.accent,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: RichText(
+                  text: TextSpan(
+                    style: const TextStyle(fontSize: 12, color: Tokens.textSecondary),
+                    children: [
+                      TextSpan(
+                        text: approval.server,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: isDestructive ? Tokens.destructive : Tokens.accent,
+                        ),
+                      ),
+                      const TextSpan(text: ' · '),
+                      TextSpan(
+                        text: approval.tool,
+                        style: const TextStyle(
+                          color: Tokens.textPrimary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (isDestructive)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Tokens.destructive.withAlpha(30),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('DESTRUCTIVE',
+                      style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          color: Tokens.destructive,
+                          letterSpacing: 0.4)),
+                ),
+            ],
+          ),
+          if (_argsPreview.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              _argsPreview,
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: Tokens.textMuted,
+                  fontFamily: 'JetBrains Mono'),
+            ),
+          ],
+          const SizedBox(height: 10),
+          // Action buttons
+          Row(
+            children: [
+              // Approve (primary unless destructive)
+              _ApproveButton(
+                label: 'Approve',
+                primary: !isDestructive,
+                destructive: isDestructive,
+                onTap: () => onRespond(true, ''),
+              ),
+              const SizedBox(width: 6),
+              _ApproveButton(
+                label: 'Approve for session',
+                onTap: () => onRespond(true, 'allow_session'),
+              ),
+              const SizedBox(width: 6),
+              _ApproveButton(
+                label: 'Always approve',
+                onTap: () => onRespond(true, 'always_allow'),
+              ),
+              const Spacer(),
+              _ApproveButton(
+                label: 'Deny',
+                destructive: true,
+                onTap: () => onRespond(false, ''),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ApproveButton extends StatelessWidget {
+  const _ApproveButton({
+    required this.label,
+    required this.onTap,
+    this.primary = false,
+    this.destructive = false,
+  });
+  final String label;
+  final VoidCallback onTap;
+  final bool primary;
+  final bool destructive;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = destructive
+        ? Tokens.destructive
+        : primary
+            ? Tokens.background
+            : Tokens.textSecondary;
+    final bg = destructive
+        ? Tokens.destructive.withAlpha(20)
+        : primary
+            ? Tokens.accent
+            : Tokens.surface;
+    final border = destructive
+        ? Tokens.destructive.withAlpha(80)
+        : primary
+            ? Colors.transparent
+            : Tokens.glassEdge;
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: border),
+        ),
+        child: Text(label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: primary ? FontWeight.w600 : FontWeight.w400,
+              color: fg,
+            )),
       ),
     );
   }

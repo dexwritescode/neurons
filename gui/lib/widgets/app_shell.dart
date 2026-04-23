@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_state.dart';
-import '../proto/neurons.pb.dart' show McpServerConfig;
+import '../proto/neurons.pb.dart' show McpServerConfig, PermissionRule;
 import '../screens/chat_screen.dart';
 import '../screens/model_picker_screen.dart';
 import '../screens/model_browser_screen.dart';
@@ -484,6 +484,10 @@ class _SettingsPanelState extends State<_SettingsPanel> {
               const Divider(color: Tokens.glassEdge),
               const SizedBox(height: 32),
               const _McpServersSection(),
+              const SizedBox(height: 32),
+              const Divider(color: Tokens.glassEdge),
+              const SizedBox(height: 32),
+              const _PermissionsSection(),
               const SizedBox(height: 32),
               const Divider(color: Tokens.glassEdge),
               const SizedBox(height: 32),
@@ -1195,6 +1199,170 @@ class _AddMcpServerDialogState extends State<_AddMcpServerDialog> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── MCP permissions section (inside Settings) ─────────────────────────────────
+
+class _PermissionsSection extends StatefulWidget {
+  const _PermissionsSection();
+
+  @override
+  State<_PermissionsSection> createState() => _PermissionsSectionState();
+}
+
+class _PermissionsSectionState extends State<_PermissionsSection> {
+  bool _loaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_loaded) {
+      _loaded = true;
+      context.read<AppState>().loadPermissionRules();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rules = context.watch<AppState>().permissionRules;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text('MCP PERMISSIONS',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: Tokens.textMuted,
+                  letterSpacing: 1.1,
+                )),
+            const Spacer(),
+            IconButton(
+              onPressed: () =>
+                  context.read<AppState>().loadPermissionRules(),
+              icon: const Icon(Icons.refresh_rounded, size: 14),
+              color: Tokens.textMuted,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              tooltip: 'Refresh',
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (rules.isEmpty)
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Tokens.surface,
+              borderRadius: BorderRadius.circular(Tokens.radiusInput),
+              border: Border.all(color: Tokens.glassEdge),
+            ),
+            child: const Text(
+              'No saved permissions. Rules are created when you respond to approval prompts.',
+              style: TextStyle(fontSize: 12, color: Tokens.textMuted),
+            ),
+          )
+        else
+          ...rules.map((r) => _PermissionRuleRow(rule: r)),
+        const SizedBox(height: 8),
+        const Text(
+          'Saved rules take effect for all future tool calls matching the server and tool name.',
+          style: TextStyle(fontSize: 11, color: Tokens.textMuted),
+        ),
+      ],
+    );
+  }
+}
+
+class _PermissionRuleRow extends StatelessWidget {
+  const _PermissionRuleRow({required this.rule});
+  final PermissionRule rule;
+
+  static const _labels = <String, String>{
+    'always_allow': 'Always allow',
+    'allow_session': 'Session',
+    'always_deny': 'Deny',
+    'always_ask': 'Ask',
+  };
+
+  static const _colors = <String, Color>{
+    'always_allow': Color(0xFF4CAF50),
+    'allow_session': Color(0xFF29B6F6),
+    'always_deny': Tokens.destructive,
+    'always_ask': Tokens.textMuted,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _labels[rule.permission] ?? rule.permission;
+    final color = _colors[rule.permission] ?? Tokens.textMuted;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Tokens.surface,
+        borderRadius: BorderRadius.circular(Tokens.radiusInput),
+        border: Border.all(color: Tokens.glassEdge),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: const TextStyle(fontSize: 12),
+                children: [
+                  TextSpan(
+                    text: rule.server,
+                    style: const TextStyle(color: Tokens.textSecondary),
+                  ),
+                  const TextSpan(
+                    text: ' · ',
+                    style: TextStyle(color: Tokens.textMuted),
+                  ),
+                  TextSpan(
+                    text: rule.tool,
+                    style: const TextStyle(
+                        color: Tokens.textPrimary,
+                        fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withAlpha(24),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                    letterSpacing: 0.3)),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            onPressed: () => context
+                .read<AppState>()
+                .deletePermissionRule(rule.server, rule.tool, rule.scope),
+            icon: const Icon(Icons.delete_outline_rounded, size: 14),
+            color: Tokens.textMuted,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            tooltip: 'Reset to default',
+          ),
+        ],
       ),
     );
   }
