@@ -11,7 +11,9 @@ class ChatSession {
     required this.title,
     required this.createdAt,
     List<ConversationMessage>? messages,
-  }) : messages = messages ?? [];
+    Set<String>? activeServerNames,
+  })  : messages = messages ?? [],
+        activeServerNames = activeServerNames ?? {};
 
   /// Create a fresh, empty session with a generated id.
   factory ChatSession.create() => ChatSession(
@@ -30,12 +32,16 @@ class ChatSession {
                   content: m['content'] as String,
                 ))
             .toList(),
+        activeServerNames: Set<String>.from(
+            (json['activeServerNames'] as List<dynamic>? ?? [])
+                .cast<String>()),
       );
 
   String id;
   String title;
   final DateTime createdAt;
   final List<ConversationMessage> messages;
+  final Set<String> activeServerNames;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -44,6 +50,7 @@ class ChatSession {
         'messages': messages
             .map((m) => {'role': m.role, 'content': m.content})
             .toList(),
+        'activeServerNames': activeServerNames.toList(),
       };
 
   static String _newId() =>

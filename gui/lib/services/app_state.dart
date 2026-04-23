@@ -39,10 +39,32 @@ class InferenceSettings {
   double repPenalty;
 }
 
+class ToolCallRecord {
+  ToolCallRecord({
+    required this.server,
+    required this.tool,
+    required this.argsJson,
+    this.resultJson,
+    this.elapsedMs = 0,
+    this.error = false,
+  });
+  final String server;
+  final String tool;
+  final String argsJson;
+  String? resultJson; // null = still running
+  int elapsedMs;
+  bool error;
+}
+
 class ConversationMessage {
-  ConversationMessage({required this.role, required this.content});
+  ConversationMessage({
+    required this.role,
+    required this.content,
+    List<ToolCallRecord>? toolCalls,
+  }) : toolCalls = toolCalls ?? [];
   final String role; // 'user' | 'assistant'
   String content;
+  final List<ToolCallRecord> toolCalls;
 }
 
 class AppState extends ChangeNotifier {
@@ -227,11 +249,14 @@ class AppState extends ChangeNotifier {
     nodes.add(node);
     await _nodeRepo.saveRemoteNodes(nodes);
     notifyListeners();
-    // Proactively push token to newly added remote node.
+    // Proactively push token and MCP servers to newly added remote node.
     if (!node.isLocal) {
       try {
         final remote = GrpcNeuronsClient(host: node.host, port: node.port);
         await remote.setHfToken(_effectiveToken(node));
+        if (node.mcpMode == McpMode.inherit && mcpServers.isNotEmpty) {
+          await remote.pushMcpServers(mcpServers);
+        }
         remote.close();
       } catch (_) {}
     }
@@ -275,6 +300,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     // Push effective HF token to the newly active node.
     try { await _client.setHfToken(_effectiveToken(target)); } catch (_) {}
+    // Push configured MCP servers if the node inherits the local list.
+    if (!target.isLocal && target.mcpMode == McpMode.inherit && mcpServers.isNotEmpty) {
+      try { await _client.pushMcpServers(mcpServers); } catch (_) {}
+    }
     // Refresh status from the new node
     try {
       final s = await _client.getStatus();
@@ -373,6 +402,21 @@ class AppState extends ChangeNotifier {
 
   /// The active session's message list. Widgets read this directly.
   List<ConversationMessage> get messages => _activeSession.messages;
+
+  /// Set of MCP server names enabled for the active session.
+  Set<String> get activeServerNames => _activeSession.activeServerNames;
+
+  /// Toggle a server's activation state for the current chat session.
+  void toggleActiveServer(String name) {
+    final set = _activeSession.activeServerNames;
+    if (set.contains(name)) {
+      set.remove(name);
+    } else {
+      set.add(name);
+    }
+    notifyListeners();
+    unawaited(_chatRepo.save(_activeSession));
+  }
 
   // ── Undo ──────────────────────────────────────────────────────────────────
   /// Single-level undo snapshot for delete/truncate operations.
@@ -704,12 +748,36 @@ class AppState extends ChangeNotifier {
         ..maxTokens = inferenceSettings.maxTokens
         ..contextWindow = inferenceSettings.contextWindow;
 
-      final stream = _client.generate(prompt, history: history, params: params);
+      final stream = _client.generate(
+        prompt,
+        history: history,
+        params: params,
+        activeMcpServers: _activeSession.activeServerNames.toList(),
+        sessionId: _activeSession.id,
+      );
 
       _generateCompleter = Completer<void>();
       _generateSubscription = stream.listen(
         (resp) {
-          if (resp.hasApprovalRequest()) {
+          if (resp.hasToolCall()) {
+            final tc = resp.toolCall;
+            assistantMsg.toolCalls.add(ToolCallRecord(
+              server: tc.server,
+              tool: tc.tool,
+              argsJson: tc.argsJson,
+            ));
+            notifyListeners();
+          } else if (resp.hasToolResult()) {
+            final tr = resp.toolResult;
+            final record = assistantMsg.toolCalls.lastWhere(
+              (r) => r.server == tr.server && r.tool == tr.tool && r.resultJson == null,
+              orElse: () => ToolCallRecord(server: tr.server, tool: tr.tool, argsJson: ''),
+            );
+            record.resultJson = tr.resultJson;
+            record.elapsedMs = tr.elapsedMs.toInt();
+            record.error = tr.error;
+            notifyListeners();
+          } else if (resp.hasApprovalRequest()) {
             pendingApproval = resp.approvalRequest;
             notifyListeners();
           } else if (resp.done) {

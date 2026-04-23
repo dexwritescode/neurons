@@ -104,6 +104,8 @@ class _FakeNeuronsClient with _NoBrowserMixin implements NeuronsClient {
     String prompt, {
     List<proto.ChatMessage> history = const [],
     proto.SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) async* {}
 
   @override
@@ -137,6 +139,8 @@ class _HistoryCapturingClient with _NoBrowserMixin implements NeuronsClient {
     String prompt, {
     List<proto.ChatMessage> history = const [],
     proto.SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) async* {
     capturedHistories.add(List.of(history));
     yield proto.GenerateResponse()..token = replyToken;
@@ -414,6 +418,8 @@ class _BrowserFakeClient with _NoBrowserMixin implements NeuronsClient {
     String prompt, {
     List<proto.ChatMessage> history = const [],
     proto.SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) async* {}
 
   @override
@@ -450,6 +456,8 @@ class _StreamControllerClient with _NoBrowserMixin implements NeuronsClient {
     String prompt, {
     List<proto.ChatMessage> history = const [],
     proto.SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) {
     final ctrl = StreamController<proto.GenerateResponse>();
     onGenerate(ctrl);

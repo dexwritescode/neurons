@@ -503,6 +503,8 @@ class FfiNeuronsClient implements NeuronsClient {
     String prompt, {
     List<ChatMessage> history = const [],
     SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) {
     final ctrl = StreamController<GenerateResponse>();
     final port = ReceivePort();

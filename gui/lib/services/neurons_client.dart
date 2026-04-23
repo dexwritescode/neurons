@@ -16,6 +16,8 @@ abstract class NeuronsClient {
     String prompt, {
     List<ChatMessage> history = const [],
     SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   });
 
   // Model browser / download
@@ -106,10 +108,14 @@ class GrpcNeuronsClient implements NeuronsClient {
     String prompt, {
     List<ChatMessage> history = const [],
     SamplingParams? params,
+    List<String> activeMcpServers = const [],
+    String sessionId = '',
   }) {
     final req = GenerateRequest()
       ..prompt = prompt
-      ..history.addAll(history);
+      ..history.addAll(history)
+      ..activeMcpServers.addAll(activeMcpServers)
+      ..sessionId = sessionId;
     if (params != null) req.params = params;
     return _stub.generate(req);
   }
