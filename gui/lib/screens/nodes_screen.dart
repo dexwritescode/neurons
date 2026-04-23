@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/node_config.dart';
+import '../proto/neurons.pb.dart' show GpuSlot, McpServerConfig;
 import '../services/app_state.dart';
 import '../services/neurons_client.dart';
-import '../proto/neurons.pb.dart' show GpuSlot;
 import '../theme/tokens.dart';
 import '../widgets/resize_divider.dart';
 
@@ -172,17 +172,18 @@ class _NodesScreenState extends State<NodesScreen> {
   }
 
   Future<void> _handleSave(
-      String? editId, String name, String host, int port, String? hfToken) async {
+      String? editId, String name, String host, int port, String? hfToken,
+      McpMode mcpMode) async {
     final state = context.read<AppState>();
-    // Normalise: empty string → null (inherit global)
     final token = (hfToken != null && hfToken.trim().isNotEmpty)
         ? hfToken.trim()
         : null;
     if (editId != null) {
       final existing = state.nodes.where((n) => n.id == editId).firstOrNull;
       if (existing != null) {
-        await state.updateNode(
-            existing.copyWith(name: name, host: host, port: port, hfToken: token));
+        await state.updateNode(existing.copyWith(
+            name: name, host: host, port: port,
+            hfToken: token, mcpMode: mcpMode));
       }
     } else {
       final node = NodeConfig(
@@ -191,6 +192,7 @@ class _NodesScreenState extends State<NodesScreen> {
         host: host,
         port: port,
         hfToken: token,
+        mcpMode: mcpMode,
       );
       await state.addNode(node);
       setState(() => _selectedId = node.id);
@@ -962,6 +964,15 @@ class _OverviewTab extends StatelessWidget {
           _statusBox(node)
         else
           ...gpus.map((slot) => _GpuSlotCard(slot: slot, isLocal: node.isLocal, state: state)),
+        const SizedBox(height: 24),
+        const Divider(color: Tokens.glassEdge),
+        const SizedBox(height: 16),
+        const Text('MCP SERVERS',
+            style: TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w700,
+              color: Tokens.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 10),
+        _McpServersOverview(node: node, state: state),
       ],
     );
   }
@@ -1377,7 +1388,8 @@ class _NodeFormDialog extends StatefulWidget {
   });
   final NodeConfig? node;
   final void Function(
-      String? editId, String name, String host, int port, String? hfToken) onSave;
+      String? editId, String name, String host, int port, String? hfToken,
+      McpMode mcpMode) onSave;
   final VoidCallback onClose;
 
   @override
@@ -1391,6 +1403,7 @@ class _NodeFormDialogState extends State<_NodeFormDialog> {
   late final TextEditingController _tokenCtrl;
   late bool _useGlobalToken;
   bool _obscureToken = true;
+  late McpMode _mcpMode;
 
   @override
   void initState() {
@@ -1401,6 +1414,7 @@ class _NodeFormDialogState extends State<_NodeFormDialog> {
     final existingToken = widget.node?.hfToken;
     _useGlobalToken = existingToken == null || existingToken.isEmpty;
     _tokenCtrl = TextEditingController(text: existingToken ?? '');
+    _mcpMode = widget.node?.mcpMode ?? McpMode.inherit;
   }
 
   @override
@@ -1557,6 +1571,43 @@ class _NodeFormDialogState extends State<_NodeFormDialog> {
                 const Text('This node will use the global token from Settings.',
                     style: TextStyle(fontSize: 11, color: Tokens.textMuted)),
               ],
+              const SizedBox(height: 20),
+              const Divider(color: Tokens.glassEdge),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Text('MCP SERVERS',
+                      style: TextStyle(
+                        fontSize: 10, fontWeight: FontWeight.w700,
+                        color: Tokens.textMuted, letterSpacing: 0.7)),
+                  const Spacer(),
+                  Row(
+                    children: [
+                      Text(
+                        _mcpMode == McpMode.inherit
+                            ? 'Inherit from controller'
+                            : 'Own config',
+                        style: const TextStyle(
+                            fontSize: 11, color: Tokens.textSecondary)),
+                      const SizedBox(width: 6),
+                      Switch(
+                        value: _mcpMode == McpMode.inherit,
+                        onChanged: (v) => setState(() =>
+                            _mcpMode = v ? McpMode.inherit : McpMode.own),
+                        activeColor: Tokens.accent,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _mcpMode == McpMode.inherit
+                    ? 'This node will receive MCP servers from this device on connect.'
+                    : 'This node manages its own MCP server list independently.',
+                style: const TextStyle(fontSize: 11, color: Tokens.textMuted),
+              ),
               const SizedBox(height: 24),
               Row(
                 children: [
@@ -1577,7 +1628,7 @@ class _NodeFormDialogState extends State<_NodeFormDialog> {
                           int.tryParse(_portCtrl.text.trim()) ?? 50051;
                       if (name.isEmpty || host.isEmpty) return;
                       final token = _useGlobalToken ? null : _tokenCtrl.text.trim();
-                      widget.onSave(widget.node?.id, name, host, port, token);
+                      widget.onSave(widget.node?.id, name, host, port, token, _mcpMode);
                     },
                     child: Text(isEdit ? 'Save' : 'Add Node'),
                   ),
@@ -1590,3 +1641,92 @@ class _NodeFormDialogState extends State<_NodeFormDialog> {
     );
   }
 }
+
+// ── MCP servers overview (inside node Overview tab) ───────────────────────────
+
+class _McpServersOverview extends StatelessWidget {
+  const _McpServersOverview({required this.node, required this.state});
+  final NodeInfo node;
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (node.isLocal) {
+      final servers = state.mcpServers;
+      if (servers.isEmpty) {
+        return _infoBox('No MCP servers configured. Add them in Settings → MCP Servers.');
+      }
+      return Column(
+        children: servers.map((s) => _McpServerChip(server: s)).toList(),
+      );
+    }
+    final mode = node.config.mcpMode;
+    return _infoBox(
+      mode == McpMode.inherit
+          ? 'Inherits MCP servers from this device.'
+          : 'Configured independently on this node.',
+    );
+  }
+
+  Widget _infoBox(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Tokens.surfaceElevated,
+          borderRadius: BorderRadius.circular(Tokens.radiusInput),
+          border: Border.all(color: Tokens.glassEdge),
+        ),
+        child: Text(text,
+            style: const TextStyle(fontSize: 12, color: Tokens.textMuted)),
+      );
+}
+
+class _McpServerChip extends StatelessWidget {
+  const _McpServerChip({required this.server});
+  final McpServerConfig server;
+
+  @override
+  Widget build(BuildContext context) {
+    final isStdio = server.transport == 'stdio';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Tokens.surfaceElevated,
+        borderRadius: BorderRadius.circular(Tokens.radiusInput),
+        border: Border.all(
+            color: server.enabled
+                ? Tokens.glassEdge
+                : Tokens.glassEdge.withAlpha(80)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              color: Tokens.accentDim,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              isStdio ? 'STDIO' : 'SSE',
+              style: const TextStyle(
+                fontSize: 9, fontWeight: FontWeight.w700,
+                color: Tokens.accent, letterSpacing: 0.5),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(server.name,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: server.enabled ? Tokens.textPrimary : Tokens.textMuted,
+                )),
+          ),
+          if (!server.enabled)
+            const Text('disabled',
+                style: TextStyle(fontSize: 10, color: Tokens.textMuted)),
+        ],
+      ),
+    );
+  }
+}
+
