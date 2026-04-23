@@ -405,6 +405,19 @@ class AppState extends ChangeNotifier {
 
   bool get modelLoaded => modelPath != null;
 
+  // ── Tool approval ─────────────────────────────────────────────────────────
+  proto.ToolApprovalRequest? pendingApproval;
+
+  Future<void> respondApproval(
+      String approvalId, bool approved, {String newPermission = ''}) async {
+    pendingApproval = null;
+    notifyListeners();
+    try {
+      await _client.respondToolApproval(approvalId, approved,
+          newPermission: newPermission);
+    } catch (_) {}
+  }
+
   // ── MCP servers ──────────────────────────────────────────────────────────
   List<proto.McpServerConfig> mcpServers = [];
 
@@ -424,6 +437,23 @@ class AppState extends ChangeNotifier {
   Future<void> removeMcpServer(String name) async {
     await _client.removeMcpServer(name);
     await loadMcpServers();
+  }
+
+  // ── MCP permission rules ──────────────────────────────────────────────────
+  List<proto.PermissionRule> permissionRules = [];
+
+  Future<void> loadPermissionRules() async {
+    try {
+      final resp = await _client.listPermissionRules();
+      permissionRules = resp.rules.toList();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> deletePermissionRule(
+      String server, String tool, String scope) async {
+    await _client.deletePermissionRule(server, tool, scope);
+    await loadPermissionRules();
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -679,7 +709,11 @@ class AppState extends ChangeNotifier {
       _generateCompleter = Completer<void>();
       _generateSubscription = stream.listen(
         (resp) {
-          if (resp.done) {
+          if (resp.hasApprovalRequest()) {
+            pendingApproval = resp.approvalRequest;
+            notifyListeners();
+          } else if (resp.done) {
+            pendingApproval = null;
             lastPromptTokens = resp.promptTokens.toInt();
             lastGenTokens    = resp.genTokens.toInt();
             if (resp.error.isNotEmpty) generationError = resp.error;
@@ -717,6 +751,7 @@ class AppState extends ChangeNotifier {
     _generateSubscription = null;
     _generateCompleter = null;
     isGenerating = false;
+    pendingApproval = null;
     notifyListeners();
   }
 
