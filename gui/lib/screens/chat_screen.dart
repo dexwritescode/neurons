@@ -644,8 +644,17 @@ class _MessageRowState extends State<_MessageRow> {
                   ],
                 ),
                 if (widget.message.toolCalls.isNotEmpty) ...[
-                  ...widget.message.toolCalls
-                      .map((r) => _ToolCallBlock(record: r)),
+                  ...() {
+                    final pending = widget.state.pendingApproval;
+                    return widget.message.toolCalls.map((r) {
+                      final isWaiting = pending != null &&
+                          r.resultJson == null &&
+                          r.server == pending.server &&
+                          r.tool == pending.tool;
+                      return _ToolCallBlock(
+                          record: r, isWaitingApproval: isWaiting);
+                    });
+                  }(),
                   if (widget.isLastMessage && widget.isGenerating)
                     const Padding(
                       padding: EdgeInsets.only(top: 6),
@@ -1128,8 +1137,9 @@ class _ToolsSheet extends StatelessWidget {
 // ── Tool call block ───────────────────────────────────────────────────────────
 
 class _ToolCallBlock extends StatefulWidget {
-  const _ToolCallBlock({required this.record});
+  const _ToolCallBlock({required this.record, this.isWaitingApproval = false});
   final ToolCallRecord record;
+  final bool isWaitingApproval;
 
   @override
   State<_ToolCallBlock> createState() => _ToolCallBlockState();
@@ -1142,13 +1152,18 @@ class _ToolCallBlockState extends State<_ToolCallBlock> {
   Widget build(BuildContext context) {
     final r = widget.record;
     final isDone = r.resultJson != null;
+    final isWaiting = widget.isWaitingApproval;
 
     return Container(
       margin: const EdgeInsets.only(top: 6),
       decoration: BoxDecoration(
-        color: Tokens.surfaceElevated,
+        color: isWaiting
+            ? Tokens.destructive.withAlpha(10)
+            : Tokens.surfaceElevated,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Tokens.glassEdge),
+        border: Border.all(
+          color: isWaiting ? Tokens.destructive.withAlpha(60) : Tokens.glassEdge,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1164,13 +1179,17 @@ class _ToolCallBlockState extends State<_ToolCallBlock> {
                         ? Icons.error_outline_rounded
                         : isDone
                             ? Icons.check_circle_outline_rounded
-                            : Icons.sync_rounded,
+                            : isWaiting
+                                ? Icons.pending_outlined
+                                : Icons.sync_rounded,
                     size: 12,
                     color: r.error
                         ? Tokens.destructive
                         : isDone
                             ? Tokens.accent
-                            : Tokens.textMuted,
+                            : isWaiting
+                                ? Tokens.destructive.withAlpha(180)
+                                : Tokens.textMuted,
                   ),
                   const SizedBox(width: 6),
                   Text(
@@ -1181,7 +1200,17 @@ class _ToolCallBlockState extends State<_ToolCallBlock> {
                       fontFamily: 'JetBrains Mono',
                     ),
                   ),
-                  if (isDone && !r.error) ...[
+                  if (isWaiting) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      'Awaiting approval…',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Tokens.destructive.withAlpha(180),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ] else if (isDone && !r.error) ...[
                     const SizedBox(width: 6),
                     Text(
                       '${r.elapsedMs}ms',
