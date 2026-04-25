@@ -164,7 +164,8 @@ TEST_F(HuggingFaceIntegrationTest, GetModelDetailsGPT2) {
 
     // Verify results
     EXPECT_FALSE(errorOccurred) << "Error: " << lastError;
-    EXPECT_EQ(lastModelDetails.id, "gpt2");
+    // HF redirects the short alias "gpt2" to "openai-community/gpt2"
+    EXPECT_NE(lastModelDetails.id.find("gpt2"), std::string::npos);
     EXPECT_FALSE(lastModelDetails.name.empty());
     EXPECT_EQ(lastModelDetails.type, ModelType::TEXT_GENERATION);
     EXPECT_GT(lastModelDetails.downloads, 0); // Popular model should have downloads
