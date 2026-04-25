@@ -26,20 +26,32 @@ struct ToolApprovalRequest {
 };
 
 // Callback types for the Generate stream.
-// ApprovalCb: called when a tool requires explicit user approval.
-// Returns a future that resolves to true (approved) or false (denied) when
-// RespondToolApproval is called with the same approval_id.
 using ApprovalCb = std::function<std::future<bool>(const ToolApprovalRequest&)>;
 
-// ToolCallCb: return value from make_tool_call_cb().
-// nullopt = denied (tool call silently dropped).
-// string  = tool result JSON to inject into the context.
 using ToolCallCb = std::function<
     std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
 
+// Hook called around every tool dispatch (built-in or external MCP server).
+// Hooks are invoked in registration order.
+//
+// pre_call:  receives mutable args_json — hook can rewrite args or return false
+//            to silently deny the call.
+// post_call: receives mutable result_json — hook can strip tokens, transform, or
+//            log the result (e.g. RTK-style output trimming).
+struct ToolHook {
+    std::function<bool(const std::string& server,
+                       const std::string& tool,
+                       std::string&       args_json)>   pre_call;
+
+    std::function<void(const std::string& server,
+                       const std::string& tool,
+                       const std::string& args_json,
+                       std::string&       result_json)> post_call;
+};
+
 // Owns and coordinates MCP server connections.
-// Aggregates tool lists across active servers, enforces per-tool permissions,
-// and routes tool calls to the correct McpClient.
+// Aggregates tool lists across active servers (including built-ins), enforces
+// per-tool permissions, and routes tool calls to the correct handler.
 //
 // Thread-safety: all public methods are guarded by an internal mutex.
 class McpManager {
@@ -55,10 +67,12 @@ public:
 
     void                         add_server(const McpServerConfig& cfg);
     bool                         remove_server(const std::string& name);
+
+    // Returns built-in servers followed by user-configured servers.
     std::vector<McpServerConfig> list_servers() const;
 
-    // Replace entire server list (used by PushMcpServers inherit-mode).
-    // Does not persist — in-memory only for the session.
+    // Replace entire user-configured server list (used by PushMcpServers).
+    // Does not affect built-in servers. Does not persist — in-memory only.
     void push_servers(const std::vector<McpServerConfig>& servers);
 
     // ── Connections ───────────────────────────────────────────────────────────
@@ -79,20 +93,12 @@ public:
     void load_permissions();
     void save_permissions() const;
 
-    // Returns rules matching the given scope filter (empty = all scopes).
     std::vector<PermissionRule> list_rules(const std::string& scope_filter = "") const;
-
-    // Add or replace a rule. Rules with the same (server, tool, scope) are replaced.
     void set_rule(const PermissionRule& rule);
-
-    // Remove rules matching (server, tool, scope).
     void delete_rule(const std::string& server,
                      const std::string& tool,
                      const std::string& scope);
 
-    // Resolve permission for a tool call given its parsed args_json.
-    // Checks session overrides, then per-chat rules, then global rules.
-    // Returns "always_allow" | "allow_session" | "always_ask" | "always_deny".
     std::string resolve_permission(const std::string& server,
                                    const std::string& tool,
                                    const std::string& args_json,
@@ -101,31 +107,56 @@ public:
 
     // ── Tool call callback ────────────────────────────────────────────────────
 
-    // approval_cb: called when a tool's resolved permission is "always_ask".
-    // Returns a ToolCallCb suitable for passing to generate_internal().
     ToolCallCb make_tool_call_cb(const std::string& session_id = "",
                                  const std::string& chat_id    = "",
                                  ApprovalCb         approval_cb = nullptr);
+
+    // ── Tool hooks ────────────────────────────────────────────────────────────
+
+    // Register a hook to run before/after every tool dispatch (built-in or external).
+    // Hooks are called in registration order. Thread-safe.
+    void add_tool_hook(ToolHook hook);
 
 private:
     std::string servers_path()     const;
     std::string permissions_path() const;
 
+    // Register the two built-in servers (neurons-filesystem, neurons-shell).
+    // Called once from the constructor.
+    void register_builtins();
+
     void rebuild_tool_map_locked();
 
-    // Returns true if args_json satisfies constraint_json (glob matching).
-    // Empty constraint_json always matches.
     static bool match_constraints(const std::string& constraint_json,
                                   const std::string& args_json);
 
+    // Dispatch a single tool call through hooks → handler → hooks.
+    // Called with mutex_ NOT held (handler may do blocking I/O).
+    std::string dispatch_tool(const std::string& server_name,
+                              const std::string& tool_name,
+                              std::string        args_json);
+
     std::string config_dir_;
 
+    // User-configured external servers.
     std::vector<McpServerConfig>                                server_configs_;
     std::unordered_map<std::string, std::unique_ptr<McpClient>> clients_;
     std::unordered_map<std::string, std::string>                tool_to_server_;
 
-    // All permission rules, sorted by priority on modification.
+    // Built-in in-process servers.
+    using BuiltinHandler = std::function<std::string(
+        const std::string& tool, const std::string& args_json, std::string& result_out)>;
+    std::vector<McpServerConfig>                    builtin_configs_;
+    std::unordered_map<std::string, BuiltinHandler> builtin_handlers_;
+    std::vector<ToolDef>                            builtin_tool_defs_;
+
+    // User-defined permission rules, sorted by priority on modification.
+    // Built-in default rules are stored separately and not exposed via list_rules().
     std::vector<PermissionRule> rules_;
+    std::vector<PermissionRule> builtin_rules_;
+
+    // Tool hooks (pre/post dispatch).
+    std::vector<ToolHook> hooks_;
 
     mutable std::mutex mutex_;
 };
