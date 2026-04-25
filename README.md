@@ -165,13 +165,13 @@ make gui           # build dylib + Flutter macOS release app
 make cli
 
 # Search for models
-./build/bin/cli search "qwen 3b"
+./build/bin/neurons search "qwen 3b"
 
 # Download one
-./build/bin/cli download mlx-community/Qwen2.5-3B-Instruct-4bit
+./build/bin/neurons download mlx-community/Qwen2.5-3B-Instruct-4bit
 
 # Chat
-./build/bin/cli chat mlx-community/Qwen2.5-3B-Instruct-4bit
+./build/bin/neurons chat mlx-community/Qwen2.5-3B-Instruct-4bit
 ```
 
 ### Run the GUI
