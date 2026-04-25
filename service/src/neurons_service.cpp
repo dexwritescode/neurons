@@ -717,9 +717,16 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     const std::string session_id = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
 
-    const int n_max = (req.has_params() && req.params().max_tokens() > 0)
-                      ? req.params().max_tokens()
-                      : (mdl->is_reasoning_model() ? 4096 : 1024);
+    const int requested_max = (req.has_params() && req.params().max_tokens() > 0)
+                              ? req.params().max_tokens() : 0;
+    // Reasoning models need at least 4096 tokens — the think block alone can exceed 1000.
+    // Apply a floor even when the client sends an explicit (but too-low) value.
+    const int n_max = [&] {
+        const int fallback = mdl->is_reasoning_model() ? 4096 : 1024;
+        if (requested_max <= 0) return fallback;
+        if (mdl->is_reasoning_model()) return std::max(requested_max, 4096);
+        return requested_max;
+    }();
     const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
     const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 
