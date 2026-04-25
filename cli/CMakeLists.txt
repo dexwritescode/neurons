@@ -98,9 +98,11 @@ add_executable(cli
     src/cli/commands/mcp_command.cpp
     src/cli/commands/base_command.h
     src/cli/commands/base_command.cpp
-    # MCP client/manager (shared sources from service/)
+    # MCP client/manager + built-in servers (shared sources from service/)
     ../service/src/mcp/mcp_client.cpp
     ../service/src/mcp/mcp_manager.cpp
+    ../service/src/mcp/builtin_filesystem.cpp
+    ../service/src/mcp/builtin_shell.cpp
     src/cli/core/cli_app.h
     src/cli/core/cli_app.cpp
     src/cli/config/neurons_config.h

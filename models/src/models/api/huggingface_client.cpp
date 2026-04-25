@@ -66,7 +66,11 @@ public:
         // Launch async task (capture future to avoid nodiscard warning)
         [[maybe_unused]] auto future = std::async(std::launch::async, [request, completion, progress]() {
             HttpResponse response = performRequestWithProgress(request, progress);
-            completion(response.statusCode >= 200 && response.statusCode < 300, response.data, response.errorMessage);
+            const bool ok = response.statusCode >= 200 && response.statusCode < 300;
+            std::string err = response.errorMessage;
+            if (!ok && err.empty())
+                err = "HTTP " + std::to_string(response.statusCode);
+            completion(ok, response.data, err);
         });
     }
 

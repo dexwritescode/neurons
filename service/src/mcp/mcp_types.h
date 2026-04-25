@@ -16,6 +16,7 @@ struct McpServerConfig {
     std::string url;
     std::unordered_map<std::string, std::string> env;
     bool enabled = true;
+    bool builtin = false; // true = handled in-process; not persisted to config
 };
 
 // A permission rule. Rules are evaluated in priority order (lower = first).

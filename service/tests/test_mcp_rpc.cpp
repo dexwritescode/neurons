@@ -57,6 +57,16 @@ protected:
         return r;
     }
 
+    // Count only user-configured servers (excluding built-ins).
+    int user_server_count(const neurons::ListMcpServersResponse& resp) {
+        int n = 0;
+        for (int i = 0; i < resp.servers_size(); ++i) {
+            const auto& name = resp.servers(i).name();
+            if (name != "neurons-filesystem" && name != "neurons-shell") ++n;
+        }
+        return n;
+    }
+
     fs::path tmp_dir_;
     std::unique_ptr<NeuronsServiceImpl> svc_;
 };
@@ -68,7 +78,8 @@ TEST_F(McpRpcTest, ListMcpServersInitiallyEmpty) {
     neurons::ListMcpServersResponse resp;
     const auto status = svc_->ListMcpServers(nullptr, &req, &resp);
     EXPECT_TRUE(status.ok());
-    EXPECT_EQ(resp.servers_size(), 0);
+    // Built-in servers are always present; no user-configured servers initially.
+    EXPECT_EQ(user_server_count(resp), 0);
 }
 
 TEST_F(McpRpcTest, ListMcpServersReturnsConfiguredServers) {
@@ -85,7 +96,7 @@ TEST_F(McpRpcTest, ListMcpServersReturnsConfiguredServers) {
     neurons::ListMcpServersRequest req;
     neurons::ListMcpServersResponse resp;
     ASSERT_TRUE(svc_->ListMcpServers(nullptr, &req, &resp).ok());
-    EXPECT_EQ(resp.servers_size(), 2);
+    EXPECT_EQ(user_server_count(resp), 2);
 }
 
 // ── AddMcpServer ─────────────────────────────────────────────────────────────
@@ -102,8 +113,12 @@ TEST_F(McpRpcTest, AddMcpServerSuccess) {
     neurons::ListMcpServersRequest list_req;
     neurons::ListMcpServersResponse list_resp;
     svc_->ListMcpServers(nullptr, &list_req, &list_resp);
-    ASSERT_EQ(list_resp.servers_size(), 1);
-    EXPECT_EQ(list_resp.servers(0).name(), "my_srv");
+    EXPECT_EQ(user_server_count(list_resp), 1);
+    // Find the user server by name (builtins are also in the list)
+    bool found = false;
+    for (int i = 0; i < list_resp.servers_size(); ++i)
+        if (list_resp.servers(i).name() == "my_srv") { found = true; break; }
+    EXPECT_TRUE(found);
 }
 
 TEST_F(McpRpcTest, AddMcpServerRejectsEmptyName) {
@@ -136,7 +151,7 @@ TEST_F(McpRpcTest, RemoveMcpServerSuccess) {
     neurons::ListMcpServersRequest list_req;
     neurons::ListMcpServersResponse list_resp;
     svc_->ListMcpServers(nullptr, &list_req, &list_resp);
-    EXPECT_EQ(list_resp.servers_size(), 0);
+    EXPECT_EQ(user_server_count(list_resp), 0);
 }
 
 TEST_F(McpRpcTest, RemoveMcpServerNotFoundReturnsError) {
@@ -168,8 +183,11 @@ TEST_F(McpRpcTest, PushMcpServersReplacesEntireList) {
     neurons::ListMcpServersRequest list_req;
     neurons::ListMcpServersResponse list_resp;
     svc_->ListMcpServers(nullptr, &list_req, &list_resp);
-    ASSERT_EQ(list_resp.servers_size(), 1);
-    EXPECT_EQ(list_resp.servers(0).name(), "new1");
+    EXPECT_EQ(user_server_count(list_resp), 1);
+    bool found = false;
+    for (int i = 0; i < list_resp.servers_size(); ++i)
+        if (list_resp.servers(i).name() == "new1") { found = true; break; }
+    EXPECT_TRUE(found);
 }
 
 TEST_F(McpRpcTest, PushMcpServersWithEmptyListClearsAll) {
@@ -185,7 +203,7 @@ TEST_F(McpRpcTest, PushMcpServersWithEmptyListClearsAll) {
     neurons::ListMcpServersRequest list_req;
     neurons::ListMcpServersResponse list_resp;
     svc_->ListMcpServers(nullptr, &list_req, &list_resp);
-    EXPECT_EQ(list_resp.servers_size(), 0);
+    EXPECT_EQ(user_server_count(list_resp), 0);
 }
 
 // ── ListPermissionRules ───────────────────────────────────────────────────────

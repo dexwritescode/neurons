@@ -103,6 +103,8 @@ add_library(neurons_service_lib STATIC
     src/http_server.cpp
     src/mcp/mcp_client.cpp
     src/mcp/mcp_manager.cpp
+    src/mcp/builtin_filesystem.cpp
+    src/mcp/builtin_shell.cpp
 )
 
 target_include_directories(neurons_service_lib PUBLIC
@@ -181,6 +183,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_executable(service_tests
         tests/test_mcp_manager.cpp
         tests/test_mcp_rpc.cpp
+        tests/test_builtin_mcp.cpp
     )
 
     target_include_directories(service_tests PRIVATE

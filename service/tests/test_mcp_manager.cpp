@@ -243,11 +243,20 @@ TEST_F(McpManagerTest, RulesAreSortedByPriorityAfterSetRule) {
 
 // ── Server config CRUD ────────────────────────────────────────────────────────
 
+// Helper: user-configured servers only (excludes built-in servers).
+static std::vector<McpServerConfig> user_servers(McpManager* mgr) {
+    std::vector<McpServerConfig> out;
+    for (const auto& s : mgr->list_servers())
+        if (!s.builtin) out.push_back(s);
+    return out;
+}
+
 TEST_F(McpManagerTest, AddServerAppendsToList) {
-    EXPECT_TRUE(mgr_->list_servers().empty());
+    EXPECT_TRUE(user_servers(mgr_.get()).empty());
     mgr_->add_server(make_server("my_server"));
-    EXPECT_EQ(mgr_->list_servers().size(), 1u);
-    EXPECT_EQ(mgr_->list_servers()[0].name, "my_server");
+    const auto servers = user_servers(mgr_.get());
+    EXPECT_EQ(servers.size(), 1u);
+    EXPECT_EQ(servers[0].name, "my_server");
 }
 
 TEST_F(McpManagerTest, AddServerUpdatesExistingByName) {
@@ -255,7 +264,7 @@ TEST_F(McpManagerTest, AddServerUpdatesExistingByName) {
     McpServerConfig updated = make_server("srv");
     updated.enabled = false;
     mgr_->add_server(updated);
-    const auto servers = mgr_->list_servers();
+    const auto servers = user_servers(mgr_.get());
     ASSERT_EQ(servers.size(), 1u);
     EXPECT_FALSE(servers[0].enabled);
 }
@@ -263,7 +272,7 @@ TEST_F(McpManagerTest, AddServerUpdatesExistingByName) {
 TEST_F(McpManagerTest, RemoveServerReturnsTrueOnSuccess) {
     mgr_->add_server(make_server("srv"));
     EXPECT_TRUE(mgr_->remove_server("srv"));
-    EXPECT_TRUE(mgr_->list_servers().empty());
+    EXPECT_TRUE(user_servers(mgr_.get()).empty());
 }
 
 TEST_F(McpManagerTest, RemoveServerReturnsFalseIfNotFound) {
@@ -274,7 +283,7 @@ TEST_F(McpManagerTest, PushServersReplacesEntireList) {
     mgr_->add_server(make_server("old1"));
     mgr_->add_server(make_server("old2"));
     mgr_->push_servers({make_server("new1")});
-    const auto servers = mgr_->list_servers();
+    const auto servers = user_servers(mgr_.get());
     ASSERT_EQ(servers.size(), 1u);
     EXPECT_EQ(servers[0].name, "new1");
 }
@@ -282,7 +291,7 @@ TEST_F(McpManagerTest, PushServersReplacesEntireList) {
 TEST_F(McpManagerTest, PushServersWithEmptyListClearsAll) {
     mgr_->add_server(make_server("srv"));
     mgr_->push_servers({});
-    EXPECT_TRUE(mgr_->list_servers().empty());
+    EXPECT_TRUE(user_servers(mgr_.get()).empty());
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────────
@@ -298,7 +307,7 @@ TEST_F(McpManagerTest, SaveAndLoadConfigRoundTrip) {
     // Fresh manager loading from the same dir
     McpManager mgr2(tmp_dir_.string());
     mgr2.load_config();
-    const auto servers = mgr2.list_servers();
+    const auto servers = user_servers(&mgr2);
     ASSERT_EQ(servers.size(), 1u);
     EXPECT_EQ(servers[0].name,    "test_srv");
     EXPECT_FALSE(servers[0].enabled);
@@ -330,10 +339,10 @@ TEST_F(McpManagerTest, LoadPermissionsPreservesInMemorySessionRules) {
 }
 
 TEST_F(McpManagerTest, LoadConfigOnMissingFileIsNoop) {
-    // No file written — load should silently succeed
+    // No file written — load should silently succeed; only built-ins are present
     McpManager fresh(tmp_dir_.string());
     EXPECT_NO_THROW(fresh.load_config());
-    EXPECT_TRUE(fresh.list_servers().empty());
+    EXPECT_TRUE(user_servers(&fresh).empty());
 }
 
 TEST_F(McpManagerTest, LoadPermissionsOnMissingFileIsNoop) {

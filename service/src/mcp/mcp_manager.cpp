@@ -1,4 +1,6 @@
 #include "mcp_manager.h"
+#include "builtin_filesystem.h"
+#include "builtin_shell.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -26,7 +28,55 @@ static bool glob_match(const std::string& pattern, const std::string& value) {
 
 McpManager::McpManager(std::string config_dir)
     : config_dir_(config_dir.empty() ? default_config_dir() : std::move(config_dir))
-{}
+{
+    register_builtins();
+}
+
+// ── Built-in server registration ──────────────────────────────────────────────
+
+void McpManager::register_builtins() {
+    struct BuiltinDef {
+        std::string name;
+        BuiltinHandler handler;
+        std::vector<ToolDef> (*tool_defs_fn)();
+    };
+
+    const BuiltinDef defs[] = {
+        { "neurons-filesystem", BuiltinFilesystem::handle, BuiltinFilesystem::tool_defs },
+        { "neurons-shell",      BuiltinShell::handle,      BuiltinShell::tool_defs      },
+    };
+
+    for (const auto& def : defs) {
+        McpServerConfig cfg;
+        cfg.name    = def.name;
+        cfg.builtin = true;
+        cfg.enabled = true;
+        builtin_configs_.push_back(cfg);
+        builtin_handlers_[def.name] = def.handler;
+        for (auto& td : def.tool_defs_fn())
+            builtin_tool_defs_.push_back(std::move(td));
+    }
+
+    // Default permission rules for built-in tools.  Stored in builtin_rules_ so
+    // they don't appear in list_rules() (which shows only user-defined rules).
+    // resolve_permission() checks builtin_rules_ after user rules as a fallback.
+    auto add_default = [&](const std::string& server, const std::string& tool,
+                           const std::string& perm) {
+        PermissionRule r;
+        r.server     = server;
+        r.tool       = tool;
+        r.permission = perm;
+        r.scope      = "global";
+        r.priority   = 0;
+        builtin_rules_.push_back(std::move(r));
+    };
+
+    add_default("neurons-filesystem", "read_file",    "allow_session");
+    add_default("neurons-filesystem", "list_dir",     "allow_session");
+    add_default("neurons-filesystem", "search_files", "allow_session");
+    add_default("neurons-filesystem", "write_file",   "always_ask");
+    add_default("neurons-shell",      "run_command",  "always_ask");
+}
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -106,7 +156,10 @@ bool McpManager::remove_server(const std::string& name) {
 
 std::vector<McpServerConfig> McpManager::list_servers() const {
     std::lock_guard lock(mutex_);
-    return server_configs_;
+    // Built-ins appear first so the GUI can always show them at the top.
+    auto result = builtin_configs_;
+    result.insert(result.end(), server_configs_.begin(), server_configs_.end());
+    return result;
 }
 
 void McpManager::push_servers(const std::vector<McpServerConfig>& servers) {
@@ -131,11 +184,19 @@ void McpManager::connect_enabled() {
         for (const auto& cfg : server_configs_)
             if (cfg.enabled && !clients_.count(cfg.name))
                 to_connect.push_back(cfg.name);
+        // Built-ins are always connected; rebuild map to include their tools.
+        rebuild_tool_map_locked();
     }
     for (const auto& name : to_connect) connect_server(name);
 }
 
 std::string McpManager::connect_server(const std::string& name) {
+    // Built-ins are always in-process — nothing to connect.
+    {
+        std::lock_guard lock(mutex_);
+        if (builtin_handlers_.count(name)) return "";
+    }
+
     std::lock_guard lock(mutex_);
     if (clients_.count(name)) return "";
 
@@ -154,12 +215,18 @@ std::string McpManager::connect_server(const std::string& name) {
 }
 
 void McpManager::disconnect_server(const std::string& name) {
+    std::lock_guard lock(mutex_);
+    // Built-ins cannot be disconnected.
+    if (builtin_handlers_.count(name)) return;
     clients_.erase(name);
     rebuild_tool_map_locked();
 }
 
 bool McpManager::is_connected(const std::string& name) const {
     std::lock_guard lock(mutex_);
+    // Enabled built-ins are always considered connected.
+    for (const auto& cfg : builtin_configs_)
+        if (cfg.name == name && cfg.enabled) return true;
     return clients_.count(name) > 0;
 }
 
@@ -167,6 +234,14 @@ bool McpManager::is_connected(const std::string& name) const {
 
 void McpManager::rebuild_tool_map_locked() {
     tool_to_server_.clear();
+    // Built-in tools (enabled servers only).
+    for (const auto& cfg : builtin_configs_) {
+        if (!cfg.enabled) continue;
+        for (const auto& t : builtin_tool_defs_)
+            if (t.server_name == cfg.name)
+                tool_to_server_[t.name] = cfg.name;
+    }
+    // External MCP clients.
     for (auto& [server_name, client] : clients_) {
         std::vector<ToolDef> tools;
         client->list_tools(tools);
@@ -178,6 +253,13 @@ void McpManager::rebuild_tool_map_locked() {
 std::vector<ToolDef> McpManager::list_tools() {
     std::lock_guard lock(mutex_);
     std::vector<ToolDef> all;
+    // Built-in tools first.
+    for (const auto& cfg : builtin_configs_) {
+        if (!cfg.enabled) continue;
+        for (const auto& t : builtin_tool_defs_)
+            if (t.server_name == cfg.name) all.push_back(t);
+    }
+    // External MCP client tools.
     for (auto& [name, client] : clients_) client->list_tools(all);
     return all;
 }
@@ -201,7 +283,10 @@ std::string McpManager::tools_json() {
 
 bool McpManager::has_active_tools() const {
     std::lock_guard lock(mutex_);
-    return !clients_.empty();
+    if (!clients_.empty()) return true;
+    for (const auto& cfg : builtin_configs_)
+        if (cfg.enabled) return true;
+    return false;
 }
 
 // ── Permission rules ──────────────────────────────────────────────────────────
@@ -335,7 +420,7 @@ std::string McpManager::resolve_permission(const std::string& server,
             return r.permission;
         }
     }
-    // Global rules (already sorted by priority)
+    // Global user rules (already sorted by priority)
     for (const auto& r : rules_) {
         if (r.scope != "global") continue;
         if (!glob_match(r.server, server)) continue;
@@ -343,7 +428,71 @@ std::string McpManager::resolve_permission(const std::string& server,
         if (!match_constraints(r.arg_constraints, args_json)) continue;
         return r.permission;
     }
-    return "always_ask";  // default
+    // Built-in default rules (fallback, not exposed via list_rules)
+    for (const auto& r : builtin_rules_) {
+        if (!glob_match(r.server, server)) continue;
+        if (!glob_match(r.tool, tool))     continue;
+        return r.permission;
+    }
+    return "always_ask";  // ultimate default
+}
+
+// ── Tool hooks ────────────────────────────────────────────────────────────────
+
+void McpManager::add_tool_hook(ToolHook hook) {
+    std::lock_guard lock(mutex_);
+    hooks_.push_back(std::move(hook));
+}
+
+// ── Unified tool dispatch (hooks → handler → hooks) ───────────────────────────
+
+std::string McpManager::dispatch_tool(const std::string& server_name,
+                                       const std::string& tool_name,
+                                       std::string        args_json) {
+    // Pre-call hooks (may rewrite args or deny the call).
+    {
+        std::lock_guard lock(mutex_);
+        for (auto& hook : hooks_) {
+            if (hook.pre_call && !hook.pre_call(server_name, tool_name, args_json))
+                return R"({"error":"Call denied by pre-call hook"})";
+        }
+    }
+
+    std::string result;
+
+    // Built-in in-process handler.
+    BuiltinHandler builtin;
+    {
+        std::lock_guard lock(mutex_);
+        auto it = builtin_handlers_.find(server_name);
+        if (it != builtin_handlers_.end()) builtin = it->second;
+    }
+    if (builtin) {
+        const auto err = builtin(tool_name, args_json, result);
+        if (!err.empty()) result = R"({"error":")" + err + R"("})";
+    } else {
+        // External MCP subprocess.
+        McpClient* client = nullptr;
+        {
+            std::lock_guard lock(mutex_);
+            auto it = clients_.find(server_name);
+            if (it == clients_.end())
+                return R"({"error":"Server not connected"})";
+            client = it->second.get();
+        }
+        const auto err = client->call_tool(tool_name, args_json, result);
+        if (!err.empty()) result = R"({"error":")" + err + R"("})";
+    }
+
+    // Post-call hooks (may transform or trim result).
+    {
+        std::lock_guard lock(mutex_);
+        for (auto& hook : hooks_) {
+            if (hook.post_call) hook.post_call(server_name, tool_name, args_json, result);
+        }
+    }
+
+    return result;
 }
 
 // ── Tool call callback ────────────────────────────────────────────────────────
@@ -354,34 +503,36 @@ ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
     return [this, session_id, chat_id, approval_cb](
                const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
 
-        // Resolve permission using the server name for this tool (or "" if unknown).
-        // always_deny is checked first so it short-circuits before we need to know
-        // which server owns the tool.
-        const std::string perm = resolve_permission(
-            [&]() -> std::string {
-                std::lock_guard lock(mutex_);
-                auto it = tool_to_server_.find(call.name);
-                return it != tool_to_server_.end() ? it->second : "";
-            }(),
-            call.name, call.arguments_json, session_id, chat_id);
-
-        if (perm == "always_deny") return std::nullopt;
-
+        // Look up which server owns this tool.
+        bool tool_found = false;
         std::string server_name;
         {
             std::lock_guard lock(mutex_);
             auto it = tool_to_server_.find(call.name);
-            if (it == tool_to_server_.end())
-                return R"({"error":"Tool not found on any connected MCP server"})";
-            server_name = it->second;
+            if (it != tool_to_server_.end()) {
+                tool_found  = true;
+                server_name = it->second;
+            }
+        }
+        if (!tool_found) {
+            // Unknown tool — still check for an explicit deny rule so callers can
+            // block unknown tools via a wildcard rule without getting an error string.
+            const std::string early = resolve_permission(
+                "", call.name, call.arguments_json, session_id, chat_id);
+            if (early == "always_deny") return std::nullopt;
+            return R"({"error":"Tool not found on any connected MCP server"})";
         }
 
+        const std::string perm = resolve_permission(
+            server_name, call.name, call.arguments_json, session_id, chat_id);
+
+        if (perm == "always_deny") return std::nullopt;
+
         if (perm == "always_ask") {
-            if (!approval_cb) return std::nullopt;  // no UI — deny by default
+            if (!approval_cb) return std::nullopt;
 
             ToolApprovalRequest req;
-            req.approval_id = []{
-                // Simple UUID-like ID using random bytes
+            req.approval_id = [] {
                 static std::atomic<uint64_t> counter{0};
                 return "approval-" + std::to_string(++counter);
             }();
@@ -389,31 +540,17 @@ ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
             req.tool        = call.name;
             req.args_json   = call.arguments_json;
             req.description = "Tool call: " + server_name + "." + call.name;
-            // Mark destructive for write/exec tools heuristically
-            req.destructive = call.name.find("write") != std::string::npos ||
-                              call.name.find("delete") != std::string::npos ||
-                              call.name.find("run") != std::string::npos ||
-                              call.name.find("exec") != std::string::npos;
+            req.destructive = call.name.find("write")  != std::string::npos ||
+                              call.name.find("delete")  != std::string::npos ||
+                              call.name.find("run")     != std::string::npos ||
+                              call.name.find("exec")    != std::string::npos;
 
             auto future = approval_cb(req);
-            const bool approved = future.get();  // blocks until RespondToolApproval
-            if (!approved) return std::nullopt;
+            if (!future.get()) return std::nullopt;
         }
 
-        // Dispatch tool call (release mutex during blocking I/O)
-        McpClient* client = nullptr;
-        {
-            std::lock_guard lock(mutex_);
-            auto it = clients_.find(server_name);
-            if (it == clients_.end())
-                return R"({"error":"Server not connected"})";
-            client = it->second.get();
-        }
-
-        std::string result;
-        const auto err = client->call_tool(call.name, call.arguments_json, result);
-        if (!err.empty()) return R"({"error":")" + err + R"("})";
-        return result;
+        // Unified dispatch through hooks.
+        return dispatch_tool(server_name, call.name, call.arguments_json);
     };
 }
 
