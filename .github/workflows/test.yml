@@ -30,8 +30,8 @@ jobs:
           key: brew-${{ runner.os }}-grpc-v1
           restore-keys: brew-${{ runner.os }}-
 
-      - name: Install gRPC + Protobuf
-        run: brew install grpc
+      - name: Install gRPC + Protobuf + coreutils
+        run: brew install grpc coreutils
 
       - name: Cache CMake fetched dependencies
         uses: actions/cache@v4
