@@ -68,7 +68,7 @@ std::string ChatCommand::buildPrompt(const std::string& model_type,
         return out;
     }
 
-    if (model_type == "qwen2") {
+    if (model_type == "qwen2" || model_type == "qwen3") {
         std::string out = "<|im_start|>system\n" + system_prompt_ + "<|im_end|>\n";
         for (const auto& t : history) {
             out += "<|im_start|>" + t.role + "\n" + t.content + "<|im_end|>\n";
@@ -194,7 +194,58 @@ int ChatCommand::run_repl(const std::string& model_path) {
         int token_count = 0;
         std::vector<int> generated_so_far;
         std::string decoded_so_far;
-        std::string assistant_reply;
+
+        // F.14.3: thinking block streaming for reasoning models (e.g. Qwen3).
+        const bool is_reasoning = inference->is_reasoning_model();
+        bool in_think = false;
+        size_t print_pos = 0;
+
+        auto flush_decoded = [&]() {
+            if (!is_reasoning) {
+                if (decoded_so_far.size() > print_pos) {
+                    std::cout << decoded_so_far.substr(print_pos) << std::flush;
+                    print_pos = decoded_so_far.size();
+                }
+                return;
+            }
+            static const std::string OPEN  = "<think>";
+            static const std::string CLOSE = "</think>";
+            static const size_t HOLD = CLOSE.size() - 1;
+
+            while (print_pos < decoded_so_far.size()) {
+                if (!in_think) {
+                    size_t pos = decoded_so_far.find(OPEN, print_pos);
+                    if (pos == std::string::npos) {
+                        size_t safe = decoded_so_far.size() > HOLD ? decoded_so_far.size() - HOLD : print_pos;
+                        if (safe > print_pos) {
+                            std::cout << decoded_so_far.substr(print_pos, safe - print_pos) << std::flush;
+                            print_pos = safe;
+                        }
+                        break;
+                    }
+                    if (pos > print_pos)
+                        std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
+                    std::cout << "\033[2m" << std::flush;
+                    print_pos = pos + OPEN.size();
+                    in_think = true;
+                } else {
+                    size_t pos = decoded_so_far.find(CLOSE, print_pos);
+                    if (pos == std::string::npos) {
+                        size_t safe = decoded_so_far.size() > HOLD ? decoded_so_far.size() - HOLD : print_pos;
+                        if (safe > print_pos) {
+                            std::cout << decoded_so_far.substr(print_pos, safe - print_pos) << std::flush;
+                            print_pos = safe;
+                        }
+                        break;
+                    }
+                    if (pos > print_pos)
+                        std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
+                    std::cout << "\033[0m\n" << std::flush;
+                    print_pos = pos + CLOSE.size();
+                    in_think = false;
+                }
+            }
+        };
 
         auto t_gen_start = std::chrono::steady_clock::now();
 
@@ -212,16 +263,16 @@ int ChatCommand::run_repl(const std::string& model_path) {
                 ++token_count;
                 if (inf_cfg.is_eos_token(token_id)) return false;
                 generated_so_far.push_back(token_id);
-                std::string new_decoded = tok.decode(generated_so_far, /*skip_special_tokens=*/true);
-                if (new_decoded.size() > decoded_so_far.size()) {
-                    std::string chunk = new_decoded.substr(decoded_so_far.size());
-                    std::cout << chunk << std::flush;
-                    assistant_reply += chunk;
-                }
-                decoded_so_far = std::move(new_decoded);
+                decoded_so_far = tok.decode(generated_so_far, /*skip_special_tokens=*/true);
+                flush_decoded();
                 return true;
             }
         );
+
+        if (print_pos < decoded_so_far.size())
+            std::cout << decoded_so_far.substr(print_pos) << std::flush;
+        if (in_think)
+            std::cout << "\033[0m" << std::flush;
 
         std::cout << "\n";
 
@@ -236,9 +287,20 @@ int ChatCommand::run_repl(const std::string& model_path) {
         std::cout << "[" << token_count << " tokens | "
                   << std::fixed << std::setprecision(1) << toks_per_sec << " tok/s]\n\n";
 
-        // Add turn to history
+        // Strip <think>...</think> from history so the model doesn't see its own reasoning
+        // on the next turn (the Qwen3 template handles it via </think> splitting, but
+        // since we build prompts manually we exclude it entirely).
+        std::string reply_for_history = decoded_so_far;
+        if (is_reasoning) {
+            auto close_pos = reply_for_history.find("</think>");
+            if (close_pos != std::string::npos) {
+                reply_for_history = reply_for_history.substr(close_pos + 8);
+                size_t first = reply_for_history.find_first_not_of("\n ");
+                if (first != std::string::npos) reply_for_history = reply_for_history.substr(first);
+            }
+        }
         history.push_back({"user", line});
-        history.push_back({"assistant", assistant_reply});
+        history.push_back({"assistant", reply_for_history});
     }
 
     backend->cleanup();

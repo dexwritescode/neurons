@@ -496,6 +496,33 @@ class _MessageRow extends StatefulWidget {
 
 class _MessageRowState extends State<_MessageRow> {
   bool _hovered = false;
+  bool _thinkExpanded = true;  // starts expanded; auto-collapses when generation ends
+
+  @override
+  void didUpdateWidget(covariant _MessageRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isGenerating && !widget.isGenerating && _thinkExpanded) {
+      setState(() => _thinkExpanded = false);
+    }
+  }
+
+  // Splits content into (thinking, answer) around the first <think>...</think> block.
+  // Returns empty thinking string when no think block is present.
+  static ({String thinking, String answer}) _parseThinking(String content) {
+    const open = '<think>';
+    const close = '</think>';
+    final openIdx = content.indexOf(open);
+    if (openIdx == -1) return (thinking: '', answer: content);
+    final closeIdx = content.indexOf(close, openIdx);
+    if (closeIdx == -1) {
+      // Still generating inside the think block
+      return (thinking: content.substring(openIdx + open.length), answer: '');
+    }
+    return (
+      thinking: content.substring(openIdx + open.length, closeIdx).trim(),
+      answer: content.substring(closeIdx + close.length).trimLeft(),
+    );
+  }
 
   void _copyMessage() =>
       Clipboard.setData(ClipboardData(text: widget.message.content));
@@ -622,27 +649,76 @@ class _MessageRowState extends State<_MessageRow> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Flexible(
-                      child: SelectableText(
-                        widget.message.content.isEmpty &&
-                                widget.message.toolCalls.isEmpty
-                            ? '…'
-                            : widget.message.content,
-                        style: const TextStyle(
-                            fontSize: 14, color: Tokens.textPrimary, height: 1.72),
+                Builder(builder: (context) {
+                  final parsed = _parseThinking(widget.message.content);
+                  final hasThink = parsed.thinking.isNotEmpty;
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (hasThink) ...[
+                        GestureDetector(
+                          onTap: () => setState(() => _thinkExpanded = !_thinkExpanded),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.psychology_outlined,
+                                  size: 13, color: Tokens.textSecondary),
+                              const SizedBox(width: 4),
+                              Text('Thinking',
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Tokens.textSecondary,
+                                      fontWeight: FontWeight.w500)),
+                              const SizedBox(width: 3),
+                              Icon(
+                                _thinkExpanded
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
+                                size: 15,
+                                color: Tokens.textSecondary,
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (_thinkExpanded) ...[
+                          const SizedBox(height: 8),
+                          SelectableText(
+                            parsed.thinking,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: Tokens.textMuted,
+                                height: 1.65),
+                          ),
+                          const SizedBox(height: 10),
+                        ] else
+                          const SizedBox(height: 6),
+                      ],
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Flexible(
+                            child: SelectableText(
+                              widget.message.toolCalls.isNotEmpty
+                                  ? widget.message.content
+                                  : (parsed.answer.isEmpty ? '…' : parsed.answer),
+                              style: const TextStyle(
+                                  fontSize: 14,
+                                  color: Tokens.textPrimary,
+                                  height: 1.72),
+                            ),
+                          ),
+                          if (widget.isLastMessage &&
+                              widget.isGenerating &&
+                              widget.message.toolCalls.isEmpty) ...[
+                            const SizedBox(width: 2),
+                            const BlinkingCursor(),
+                          ],
+                        ],
                       ),
-                    ),
-                    if (widget.isLastMessage &&
-                        widget.isGenerating &&
-                        widget.message.toolCalls.isEmpty) ...[
-                      const SizedBox(width: 2),
-                      const BlinkingCursor(),
                     ],
-                  ],
-                ),
+                  );
+                }),
                 if (widget.message.toolCalls.isNotEmpty) ...[
                   ...() {
                     final pending = widget.state.pendingApproval;

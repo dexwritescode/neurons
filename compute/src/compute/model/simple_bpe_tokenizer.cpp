@@ -546,14 +546,21 @@ std::string SimpleBpeTokenizer::apply_chat_template(
     const std::vector<std::pair<std::string, std::string>>& messages,
     bool add_generation_prompt) const {
 
-    // Simple chat template implementation
-    // TODO: Implement full Jinja2-like template processing later
-
     std::ostringstream result;
 
-    // For now, use a simple format similar to TinyLlama's expected format
-    // This is a basic fallback until we implement full template processing
+    // ChatML format: used by Qwen2, Qwen3, and any model whose chat_template
+    // references <|im_start|>/<|im_end|> control tokens.
+    if (config_.chat_template.find("<|im_start|>") != std::string::npos) {
+        for (const auto& [role, content] : messages) {
+            result << "<|im_start|>" << role << "\n" << content << "<|im_end|>\n";
+        }
+        if (add_generation_prompt) {
+            result << "<|im_start|>assistant\n";
+        }
+        return result.str();
+    }
 
+    // Fallback: TinyLlama / Zephyr-style tags
     for (const auto& [role, content] : messages) {
         if (role == "user") {
             result << "<|user|>\n" << content << "\n";
@@ -563,12 +570,9 @@ std::string SimpleBpeTokenizer::apply_chat_template(
             result << "<|system|>\n" << content << "\n";
         }
     }
-
-    // Add generation prompt if requested
     if (add_generation_prompt) {
         result << "<|assistant|>\n";
     }
-
     return result.str();
 }
 
