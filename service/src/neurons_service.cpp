@@ -718,7 +718,8 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
         std::chrono::steady_clock::now().time_since_epoch().count());
 
     const int n_max = (req.has_params() && req.params().max_tokens() > 0)
-                      ? req.params().max_tokens() : 200;
+                      ? req.params().max_tokens()
+                      : (mdl->is_reasoning_model() ? 4096 : 1024);
     const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
     const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 

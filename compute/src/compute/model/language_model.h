@@ -55,9 +55,15 @@ public:
     // Subclasses may override for architecture-specific generation strategies.
     virtual Result<std::vector<int>> generate(
         const std::vector<int>&  input_ids,
-        size_t                   max_new_tokens = 200,
+        size_t                   max_new_tokens = 4096,
         SamplingParams           params         = {},
         std::function<bool(int)> on_token       = nullptr);
+
+    // True when the model emits <think>...</think> reasoning blocks before its answer.
+    // Detected by probing the tokenizer vocabulary for the <think> token.
+    bool is_reasoning_model() const {
+        return tokenizer().find_token_id("<think>") != -1;
+    }
 
     // ── Model metadata (subclass responsibility) ─────────────────────────────
 

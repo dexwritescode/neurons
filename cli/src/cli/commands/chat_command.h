@@ -25,7 +25,7 @@ private:
 
     std::string model_name_;
     std::string system_prompt_ = "You are a helpful assistant.";
-    int   max_tokens_  = 512;
+    int   max_tokens_  = 4096;
     float temperature_ = 0.7f;
     int   top_k_       = 40;
     float top_p_       = 0.9f;

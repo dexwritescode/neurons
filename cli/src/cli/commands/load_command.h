@@ -22,7 +22,7 @@ private:
     bool verbose_;
     bool dry_run_;
     // Defaults mirror ChatEngine.h so the CLI faithfully reproduces GUI behavior.
-    int   max_tokens_  = 200;
+    int   max_tokens_  = 4096;
     float temperature_ = 0.7f;
     int   top_k_       = 40;
     float top_p_       = 0.9f;

@@ -37,7 +37,7 @@ void LoadCommand::setup_command(CLI::App& app) {
         ->required();
 
     load_cmd->add_option("-p,--prompt", prompt_, "Prompt to run inference on");
-    load_cmd->add_option("--max-tokens", max_tokens_, "Maximum new tokens to generate (default: 200)");
+    load_cmd->add_option("--max-tokens", max_tokens_, "Maximum new tokens to generate (default: 4096)");
     load_cmd->add_option("--temperature", temperature_, "Sampling temperature (default: 0.8)");
     load_cmd->add_option("--top-k", top_k_, "Top-k sampling (default: 50, 0=disabled)");
     load_cmd->add_option("--top-p", top_p_, "Top-p nucleus sampling threshold (default: 1.0=disabled)");
@@ -133,8 +133,8 @@ int LoadCommand::run_inference(const std::string& model_path) {
             "You are a helpful assistant.<|eot_id|>\n"
             "<|start_header_id|>user<|end_header_id|>\n\n" + prompt_ + "<|eot_id|>\n"
             "<|start_header_id|>assistant<|end_header_id|>\n\n";
-    } else if (model_type == "qwen2") {
-        // Qwen2 ChatML template (identified by model_type; <|im_start|>/<|im_end|> are control tokens).
+    } else if (model_type == "qwen2" || model_type == "qwen3") {
+        // Qwen2/Qwen3 ChatML template (<|im_start|>/<|im_end|> control tokens).
         formatted =
             "<|im_start|>system\n"
             "You are a helpful assistant.<|im_end|>\n"
@@ -170,6 +170,60 @@ int LoadCommand::run_inference(const std::string& model_path) {
     std::vector<int> generated_so_far;
     std::string decoded_so_far;
 
+    // F.14.3: thinking block state for reasoning models (e.g. Qwen3).
+    // Generated text begins with <think>...reasoning...</think>\n\nanswer.
+    // We stream reasoning content dimmed and print the answer normally.
+    const bool is_reasoning = inference->is_reasoning_model();
+    bool in_think = false;
+    size_t print_pos = 0;  // offset into decoded_so_far already sent to stdout
+
+    auto flush_decoded = [&]() {
+        if (!is_reasoning) {
+            if (decoded_so_far.size() > print_pos) {
+                std::cout << decoded_so_far.substr(print_pos) << std::flush;
+                print_pos = decoded_so_far.size();
+            }
+            return;
+        }
+        static const std::string OPEN  = "<think>";
+        static const std::string CLOSE = "</think>";
+        static const size_t HOLD = CLOSE.size() - 1;  // hold back to avoid split tag at boundary
+
+        while (print_pos < decoded_so_far.size()) {
+            if (!in_think) {
+                size_t pos = decoded_so_far.find(OPEN, print_pos);
+                if (pos == std::string::npos) {
+                    size_t safe = decoded_so_far.size() > HOLD ? decoded_so_far.size() - HOLD : print_pos;
+                    if (safe > print_pos) {
+                        std::cout << decoded_so_far.substr(print_pos, safe - print_pos) << std::flush;
+                        print_pos = safe;
+                    }
+                    break;
+                }
+                if (pos > print_pos)
+                    std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
+                std::cout << "\033[2m" << std::flush;  // dim on — start of thinking block
+                print_pos = pos + OPEN.size();
+                in_think = true;
+            } else {
+                size_t pos = decoded_so_far.find(CLOSE, print_pos);
+                if (pos == std::string::npos) {
+                    size_t safe = decoded_so_far.size() > HOLD ? decoded_so_far.size() - HOLD : print_pos;
+                    if (safe > print_pos) {
+                        std::cout << decoded_so_far.substr(print_pos, safe - print_pos) << std::flush;
+                        print_pos = safe;
+                    }
+                    break;
+                }
+                if (pos > print_pos)
+                    std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
+                std::cout << "\033[0m\n" << std::flush;  // dim off + separator after thinking
+                print_pos = pos + CLOSE.size();
+                in_think = false;
+            }
+        }
+    };
+
     auto t_gen_start = std::chrono::steady_clock::now();
 
     compute::SamplingParams params;
@@ -186,14 +240,18 @@ int LoadCommand::run_inference(const std::string& model_path) {
             ++token_count;
             if (inf_cfg.is_eos_token(token_id)) return false;  // stop — don't print EOS
             generated_so_far.push_back(token_id);
-            std::string new_decoded = tok.decode(generated_so_far, /*skip_special_tokens=*/true);
-            if (new_decoded.size() > decoded_so_far.size()) {
-                std::cout << new_decoded.substr(decoded_so_far.size()) << std::flush;
-            }
-            decoded_so_far = std::move(new_decoded);
+            decoded_so_far = tok.decode(generated_so_far, /*skip_special_tokens=*/true);
+            flush_decoded();
             return true;
         }
     );
+
+    // Flush any held-back characters (partial tag guard) and reset ANSI state.
+    print_pos = decoded_so_far.size() > 0 ? print_pos : 0;
+    if (print_pos < decoded_so_far.size())
+        std::cout << decoded_so_far.substr(print_pos) << std::flush;
+    if (in_think)
+        std::cout << "\033[0m" << std::flush;  // ensure dim is off if generation stopped mid-think
 
     std::cout << "\n";
 
