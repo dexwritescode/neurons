@@ -280,6 +280,40 @@ Result<Tensor> MLXBackend::gelu(const Tensor& input) {
     });
 }
 
+Result<Tensor> MLXBackend::sigmoid(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        auto mlx_input = mlx_utils::to_mlx_auto(input);
+        return mx::sigmoid(mlx_input);
+    });
+}
+
+Result<Tensor> MLXBackend::conv1d(
+    const Tensor& input, const Tensor& weight,
+    int stride, int padding, int groups)
+{
+    VALIDATE_MLX_TENSOR(input);
+    VALIDATE_MLX_TENSOR(weight);
+
+    auto mlx_input  = mlx_utils::to_mlx_auto(input);
+    auto mlx_weight = mlx_utils::to_mlx_auto(weight);
+
+    // mx::conv1d expects [N, L, C_in]; add batch dim if missing.
+    bool added_batch = false;
+    if (mlx_input.ndim() == 2) {
+        mlx_input  = mx::expand_dims(mlx_input, 0);
+        added_batch = true;
+    }
+
+    auto out_shape = input.shape();  // placeholder — recomputed after call
+    return mlx_utils::mlx_tensor_op(out_shape, [&]() {
+        auto out = mx::conv1d(mlx_input, mlx_weight, stride, padding, /*dilation=*/1, groups);
+        if (added_batch) out = mx::squeeze(out, 0);
+        return out;
+    });
+}
+
 Result<Tensor> MLXBackend::transpose(const Tensor& input) {
     if (input.backend_type() != BackendType::MLX) {
         return std::unexpected(Error{ErrorCode::InvalidInput, "MLX transpose: tensor must be from MLX backend"});

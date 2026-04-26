@@ -47,10 +47,6 @@ add_library(compute_backend
     src/compute/core/tensor.cpp
     src/compute/core/graph.h
     src/compute/core/graph.cpp
-    src/compute/backends/simd/simd_utils.cpp
-    src/compute/backends/simd/simd_utils.h
-    src/compute/backends/simd/neon_backend.h
-    src/compute/backends/simd/neon_backend.cpp
     src/compute/model/model_config.h
     src/compute/model/model_config.cpp
     src/compute/model/model_loader.h
@@ -67,6 +63,8 @@ add_library(compute_backend
     src/compute/model/llama_model.cpp
     src/compute/model/gemma_model.h
     src/compute/model/gemma_model.cpp
+    src/compute/model/qwen3_moe_model.h
+    src/compute/model/qwen3_moe_model.cpp
     src/compute/model/tinyllama_inference.h          # Backwards-compat alias → LlamaModel
     ${BACKEND_SOURCES}                               # Platform-specific sources
 )
@@ -122,21 +120,10 @@ if(BUILD_TESTING)
         GIT_TAG        v1.17.0
     )
     
-    # Google Benchmark for performance tests
-    FetchContent_Declare(
-        benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG        v1.9.4
-    )
-    
-    # Configure benchmark to not require Google Test
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-    
     # Configure GoogleTest to be more permissive
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-    FetchContent_MakeAvailable(googletest benchmark)
+    FetchContent_MakeAvailable(googletest)
     
     # Platform-specific test sources
     if(APPLE AND MLX_AVAILABLE AND TARGET mlx)
@@ -153,9 +140,7 @@ if(BUILD_TESTING)
     
     # Unit tests executable (GoogleTest)
     add_executable(compute_tests
-        tests/compute/test_simd.cpp
         tests/compute/test_symbolic_api.cpp
-        tests/compute/test_neon_execution.cpp
         tests/compute/test_model_config.cpp
         tests/compute/test_model_loader.cpp
         tests/compute/test_tokenizer_config.cpp
@@ -167,8 +152,6 @@ if(BUILD_TESTING)
         tests/compute/test_qwen2_integration.cpp
         tests/compute/test_fp16bf16_integration.cpp
         tests/compute/test_gemma_integration.cpp
-        src/compute/backends/simd/simd_utils.cpp
-        src/compute/backends/simd/neon_backend.cpp
         src/compute/core/graph.cpp
         src/compute/core/tensor.cpp
         src/compute/model/model_config.cpp
@@ -179,6 +162,7 @@ if(BUILD_TESTING)
         src/compute/model/language_model.cpp
         src/compute/model/llama_model.cpp
         src/compute/model/gemma_model.cpp
+        src/compute/model/qwen3_moe_model.cpp
         ${TEST_BACKEND_SOURCES}                          # Platform-specific sources
     )
 
@@ -222,36 +206,10 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_BINARY_DIR}/tests/compute  # For generated test_config.h
     )
     
-    # Benchmark executable (Google Benchmark)
-    add_executable(compute_benchmarks
-        tests/compute/test_benchmark_backends.cpp
-        src/compute/backends/simd/simd_utils.cpp
-        src/compute/backends/simd/neon_backend.cpp
-        src/compute/core/graph.cpp
-        src/compute/core/tensor.cpp
-    )
-    
-    # Add MLX backend to benchmarks if available
-    if(MLX_AVAILABLE AND TARGET mlx)
-        target_sources(compute_benchmarks PRIVATE
-            src/compute/backends/mlx/mlx_backend.cpp
-        )
-    endif()
-    
-    target_link_libraries(compute_benchmarks PRIVATE benchmark::benchmark compute_backend)
-    target_include_directories(compute_benchmarks PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    
-    # Add Metal framework for tests and benchmarks on Apple platforms
-    if(APPLE)
-        # Add MLX library for tests if available
-        if(MLX_AVAILABLE AND TARGET mlx)
-            target_link_libraries(compute_tests PRIVATE mlx)
-            target_compile_definitions(compute_tests PRIVATE MLX_BACKEND_ENABLED)
-            target_link_libraries(compute_benchmarks PRIVATE mlx)
-            target_compile_definitions(compute_benchmarks PRIVATE MLX_BACKEND_ENABLED)
-        endif()
+    # Link MLX for tests on Apple Silicon
+    if(APPLE AND MLX_AVAILABLE AND TARGET mlx)
+        target_link_libraries(compute_tests PRIVATE mlx)
+        target_compile_definitions(compute_tests PRIVATE MLX_BACKEND_ENABLED)
     endif()
     
     include(CTest)

@@ -122,6 +122,25 @@ public:
      */
     virtual Result<Tensor> gelu(const Tensor& input) = 0;
 
+    /**
+     * Sigmoid activation: 1 / (1 + exp(-x))
+     */
+    virtual Result<Tensor> sigmoid(const Tensor& input) = 0;
+
+    /**
+     * 1D convolution (channels-last layout: input [N, L, C_in], weight [C_out, kW, C_in/groups])
+     * @param input   [N, L, C_in] or [L, C_in] (batch dim added if missing)
+     * @param weight  [C_out, kernel_size, C_in/groups]
+     * @param stride  Convolution stride (default 1)
+     * @param padding Zero-padding applied symmetrically on both sides (default 0)
+     * @param groups  Number of groups for grouped/depthwise conv (default 1)
+     */
+    virtual Result<Tensor> conv1d(
+        const Tensor& input,
+        const Tensor& weight,
+        int stride  = 1,
+        int padding = 0,
+        int groups  = 1) = 0;
 
     /**
      * Transpose tensor (general transpose - reverses dimension order)
