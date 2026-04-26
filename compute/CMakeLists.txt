@@ -67,6 +67,8 @@ add_library(compute_backend
     src/compute/model/llama_model.cpp
     src/compute/model/gemma_model.h
     src/compute/model/gemma_model.cpp
+    src/compute/model/qwen3_moe_model.h
+    src/compute/model/qwen3_moe_model.cpp
     src/compute/model/tinyllama_inference.h          # Backwards-compat alias → LlamaModel
     ${BACKEND_SOURCES}                               # Platform-specific sources
 )
@@ -179,6 +181,7 @@ if(BUILD_TESTING)
         src/compute/model/language_model.cpp
         src/compute/model/llama_model.cpp
         src/compute/model/gemma_model.cpp
+        src/compute/model/qwen3_moe_model.cpp
         ${TEST_BACKEND_SOURCES}                          # Platform-specific sources
     )
 
