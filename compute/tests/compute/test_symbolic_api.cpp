@@ -11,7 +11,7 @@ TEST(SymbolicApiTest, TensorBasicFunctionality) {
     std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f};
     
     // Get a backend to create tensors
-    auto backend_result = BackendFactory::create(BackendType::SimdNeon);
+    auto backend_result = BackendFactory::create(BackendType::MLX);
     if (!backend_result) {
         GTEST_SKIP() << "No backend available for testing";
     }
@@ -41,7 +41,7 @@ TEST(SymbolicApiTest, SymbolicScalarCreation) {
     std::vector<float> vec_b = {4.0f, 5.0f, 6.0f};
     
     // Get a backend to create tensors
-    auto backend_result = BackendFactory::create(BackendType::SimdNeon);
+    auto backend_result = BackendFactory::create(BackendType::MLX);
     if (!backend_result) {
         GTEST_SKIP() << "No backend available for testing";
     }
@@ -66,7 +66,7 @@ TEST(SymbolicApiTest, ComputationGraphBuildingWithDependencies) {
     auto builder = ComputeGraphBuilder();
     
     // Get a backend to create tensors
-    auto backend_result = BackendFactory::create(BackendType::SimdNeon);
+    auto backend_result = BackendFactory::create(BackendType::MLX);
     if (!backend_result) {
         GTEST_SKIP() << "No backend available for testing";
     }
@@ -103,7 +103,7 @@ TEST(SymbolicApiTest, MultipleOperationTypesInGraph) {
     auto builder = ComputeGraphBuilder();
     
     // Get a backend to create tensors
-    auto backend_result = BackendFactory::create(BackendType::SimdNeon);
+    auto backend_result = BackendFactory::create(BackendType::MLX);
     if (!backend_result) {
         GTEST_SKIP() << "No backend available for testing";
     }
@@ -139,7 +139,7 @@ TEST(SymbolicApiTest, ConvenienceOverloadsWorkCorrectly) {
     auto builder = ComputeGraphBuilder();
     
     // Get a backend to create tensors
-    auto backend_result = BackendFactory::create(BackendType::SimdNeon);
+    auto backend_result = BackendFactory::create(BackendType::MLX);
     if (!backend_result) {
         GTEST_SKIP() << "No backend available for testing";
     }
