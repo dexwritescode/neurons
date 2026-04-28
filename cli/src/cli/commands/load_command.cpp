@@ -8,6 +8,7 @@
 
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
+#include "compute/model/chat_template.h"
 #include "compute/core/compute_types.h"
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
@@ -115,47 +116,12 @@ int LoadCommand::run_inference(const std::string& model_path) {
     double load_secs = std::chrono::duration<double>(t1 - t0).count();
     std::cout << " done (" << std::fixed << std::setprecision(1) << load_secs << "s)\n";
 
-    // Chat template selection must mirror ChatEngine::buildPrompt() so CLI
-    // output faithfully reproduces what the GUI user will see. If you change
-    // this, change ChatEngine::buildPrompt() too (or factor both into a
-    // shared helper).
     const std::string model_type = inference->model_type();
     const bool is_llama3 = (model_type == "llama") &&
         (inference->tokenizer().find_token_id("<|start_header_id|>") != -1);
-    std::string formatted;
-    if (is_llama3) {
-        // Llama-3 chat template (identified by presence of header tokens in vocab).
-        // BOS (<|begin_of_text|>) is embedded in the template — add_bos_token is null
-        // in tokenizer_config.json, so BOS is not auto-prepended by the tokenizer.
-        formatted =
-            "<|begin_of_text|>"
-            "<|start_header_id|>system<|end_header_id|>\n\n"
-            "You are a helpful assistant.<|eot_id|>\n"
-            "<|start_header_id|>user<|end_header_id|>\n\n" + prompt_ + "<|eot_id|>\n"
-            "<|start_header_id|>assistant<|end_header_id|>\n\n";
-    } else if (model_type == "qwen2" || model_type == "qwen3") {
-        // Qwen2/Qwen3 ChatML template (<|im_start|>/<|im_end|> control tokens).
-        formatted =
-            "<|im_start|>system\n"
-            "You are a helpful assistant.<|im_end|>\n"
-            "<|im_start|>user\n" + prompt_ + "<|im_end|>\n"
-            "<|im_start|>assistant\n";
-    } else if (model_type == "mistral") {
-        // Mistral v0.3 was not trained with system prompts.
-        formatted = "[INST] " + prompt_ + " [/INST]";
-    } else if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text") {
-        // Gemma chat template: <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
-        // BOS (<bos>) is prepended by the tokenizer (add_special_tokens=true).
-        formatted =
-            "<start_of_turn>user\n" + prompt_ + "<end_of_turn>\n"
-            "<start_of_turn>model\n";
-    } else {
-        // TinyLlama / Llama-2 chat template
-        formatted =
-            "<|system|>\nYou are a helpful assistant.</s>\n"
-            "<|user|>\n" + prompt_ + "</s>\n"
-            "<|assistant|>\n";
-    }
+    const std::string formatted = compute::apply_chat_template(
+        model_type, is_llama3, "You are a helpful assistant.",
+        {{"user", prompt_}});
     std::cout << "Model type: " << model_type << "\n";
 
     auto token_ids = inference->tokenizer().encode(formatted, /*add_special_tokens=*/true);

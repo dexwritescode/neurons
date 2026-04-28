@@ -3,19 +3,20 @@
 #include "language_model.h"
 #include "llama_model.h"
 #include "../core/tensor.h"
+#include <optional>
 #include <unordered_map>
 
 namespace compute {
 
 /**
- * Qwen3.5 MoE — hybrid SSM/MoE language model.
+ * Qwen3.5 MoE — hybrid GatedDeltaNet SSM + GQA + MoE language model.
  *
  * model_type: "qwen3_5_moe"
  *
  * Architecture (40 layers):
  *   - Every layer: MoE MLP (switch_mlp batched experts + shared_expert + shared_expert_gate)
- *   - Layers 0,1,2,4,5,6,… (linear_attention): Mamba2/SSM-style linear attention
- *   - Layers 3,7,11,… (full_attention): standard GQA with q_norm/k_norm and attn_output_gate
+ *   - is_linear = (layer_idx + 1) % 4 != 0  → GatedDeltaNet SSM
+ *   - is_linear = false (layers 3, 7, 11, …) → full GQA with q_norm/k_norm + output gate
  *
  * Weight prefix: language_model.model.layers.{i}.*
  */
@@ -38,6 +39,13 @@ public:
     size_t                    num_parameters() const override;
 
 private:
+    // Per-SSM-layer state (GatedDeltaNet)
+    struct SsmState {
+        std::optional<Tensor> conv_state;  // [kernel_size-1, conv_dim]
+        std::optional<Tensor> rec_state;   // [Hv, Dv, Dk]
+        bool valid = false;
+    };
+
     Qwen3MoeModel(
         ModelConfig                             config,
         SimpleBpeTokenizer                      tokenizer,
@@ -48,9 +56,18 @@ private:
 
     Result<Tensor> get_weight(const std::string& name) const;
 
+    Result<Tensor> embedding(const std::vector<int>& token_ids);
+
+    // Infer quantization bits from weight/scales shape (handles 4-bit and 8-bit layers).
+    int infer_quant_bits(const Tensor& w, const Tensor& scales) const;
+
     // Linear projection: dispatches to quantized_matmul or matmul.
-    // Weight names use the language_model.model.* prefix.
+    // Uses infer_quant_bits so gate layers (8-bit) work correctly.
     Result<Tensor> linear(const Tensor& input, const std::string& weight_key);
+
+    // Linear projection for a single expert slice from a 3D weight bank.
+    // weight_key names a weight of shape [num_experts, out, in_packed].
+    Result<Tensor> expert_linear(const Tensor& input, const std::string& weight_key, int expert_idx);
 
     // MoE MLP — used by every layer regardless of attention type.
     Result<Tensor> moe_mlp(const Tensor& input, int layer_idx);
@@ -59,7 +76,7 @@ private:
     Result<Tensor> full_attention_block(
         const Tensor& input, int layer_idx, int position_offset, LayerKVCache* cache);
 
-    // Linear-attention (SSM/Mamba2) transformer block (all other layers).
+    // GatedDeltaNet SSM transformer block (all other layers).
     Result<Tensor> linear_attention_block(const Tensor& input, int layer_idx);
 
     // Top-level forward: embedding → layer loop → norm → lm_head.
@@ -75,7 +92,9 @@ private:
     std::unordered_map<std::string, Tensor> weights_;
     ComputeBackend*                         backend_;
 
-    std::vector<LayerKVCache> kv_cache_;   // allocated only for full_attention layers
+    std::optional<Tensor>     dequantized_embed_tokens_;
+    std::vector<LayerKVCache> kv_cache_;
+    std::vector<SsmState>     ssm_cache_;
     size_t                    cache_position_ = 0;
 };
 

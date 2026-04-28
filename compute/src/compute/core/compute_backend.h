@@ -128,6 +128,21 @@ public:
     virtual Result<Tensor> sigmoid(const Tensor& input) = 0;
 
     /**
+     * Softplus activation: log(1 + exp(x))
+     */
+    virtual Result<Tensor> softplus(const Tensor& input) = 0;
+
+    /**
+     * Element-wise exponential: e^x
+     */
+    virtual Result<Tensor> exp(const Tensor& input) = 0;
+
+    /**
+     * Element-wise subtraction: a - b (supports broadcasting)
+     */
+    virtual Result<Tensor> subtract(const Tensor& a, const Tensor& b) = 0;
+
+    /**
      * 1D convolution (channels-last layout: input [N, L, C_in], weight [C_out, kW, C_in/groups])
      * @param input   [N, L, C_in] or [L, C_in] (batch dim added if missing)
      * @param weight  [C_out, kernel_size, C_in/groups]

@@ -64,6 +64,15 @@ public:
     Result<Tensor> sigmoid(const Tensor&) override {
         return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
     }
+    Result<Tensor> softplus(const Tensor&) override {
+        return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+    }
+    Result<Tensor> exp(const Tensor&) override {
+        return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+    }
+    Result<Tensor> subtract(const Tensor&, const Tensor&) override {
+        return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+    }
     Result<Tensor> conv1d(const Tensor&, const Tensor&, int, int, int) override {
         return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
     }
@@ -234,6 +243,15 @@ TEST_F(ModelLoaderTest, FindSafetensorsFiles) {
             return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
         }
         Result<Tensor> sigmoid(const Tensor&) override {
+            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+        }
+        Result<Tensor> softplus(const Tensor&) override {
+            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+        }
+        Result<Tensor> exp(const Tensor&) override {
+            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
+        }
+        Result<Tensor> subtract(const Tensor&, const Tensor&) override {
             return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Mock"});
         }
         Result<Tensor> conv1d(const Tensor&, const Tensor&, int, int, int) override {

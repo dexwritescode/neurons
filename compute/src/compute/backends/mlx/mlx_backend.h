@@ -60,6 +60,9 @@ public:
     Result<Tensor> silu(const Tensor& input) override;
     Result<Tensor> gelu(const Tensor& input) override;
     Result<Tensor> sigmoid(const Tensor& input) override;
+    Result<Tensor> softplus(const Tensor& input) override;
+    Result<Tensor> exp(const Tensor& input) override;
+    Result<Tensor> subtract(const Tensor& a, const Tensor& b) override;
     Result<Tensor> conv1d(const Tensor& input, const Tensor& weight,
                           int stride = 1, int padding = 0, int groups = 1) override;
     Result<Tensor> transpose(const Tensor& input) override;

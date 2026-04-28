@@ -111,23 +111,21 @@ Tensor MLXBackend::matrix_scalar_add(const Tensor& input, float scalar) {
 
 // Core operations with proper error handling
 Result<Tensor> MLXBackend::matmul(const Tensor& a, const Tensor& b) {
-    // Validate input tensors are 2D matrices
-    if (a.shape().size() != 2 || b.shape().size() != 2) {
-        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: only 2D matrices supported"});
+    if (a.shape().size() < 2 || b.shape().size() < 2) {
+        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: inputs must be at least 2D"});
     }
 
-    // Check dimension compatibility: (m, k) x (k, n) -> (m, n)
-    if (a.shape()[1] != b.shape()[0]) {
-        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: incompatible matrix dimensions"});
+    // Check inner dimension compatibility (last of a vs second-to-last of b)
+    const auto& sa = a.shape();
+    const auto& sb = b.shape();
+    if (sa[sa.size() - 1] != sb[sb.size() - 2]) {
+        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: incompatible inner dimensions"});
     }
 
     try {
         mx::array result = mx::matmul(a.to_mlx(), b.to_mlx());
-
-        // Get result shape from MLX array
         auto mlx_shape = result.shape();
         std::vector<size_t> result_shape(mlx_shape.begin(), mlx_shape.end());
-
         auto result_buffer = std::make_shared<MLXBuffer>(result);
         return Tensor(result_buffer, result_shape);
     } catch (const std::exception& e) {
@@ -286,6 +284,28 @@ Result<Tensor> MLXBackend::sigmoid(const Tensor& input) {
     return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
         auto mlx_input = mlx_utils::to_mlx_auto(input);
         return mx::sigmoid(mlx_input);
+    });
+}
+
+Result<Tensor> MLXBackend::softplus(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        auto x = mlx_utils::to_mlx_auto(input);
+        return mx::log(mx::ones_like(x) + mx::exp(x));
+    });
+}
+
+Result<Tensor> MLXBackend::exp(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        return mx::exp(mlx_utils::to_mlx_auto(input));
+    });
+}
+
+Result<Tensor> MLXBackend::subtract(const Tensor& a, const Tensor& b) {
+    VALIDATE_MLX_TENSOR(a, b);
+    return mlx_utils::mlx_tensor_op(mlx_utils::broadcast_shape(a.shape(), b.shape()), [&]() {
+        return mlx_utils::to_mlx_auto(a) - mlx_utils::to_mlx_auto(b);
     });
 }
 
