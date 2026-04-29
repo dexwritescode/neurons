@@ -1,5 +1,6 @@
 #include "mlx_backend.h"
 #include "../../model/model_loader.h"
+#include <numeric>
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
@@ -613,6 +614,55 @@ Result<Tensor> MLXBackend::triu(const Tensor& input, int k) {
     } catch (const std::exception& e) {
         return std::unexpected(Error{ErrorCode::ComputeError,
                                    std::string("MLX triu failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::take(const Tensor& input, const std::vector<int>& indices, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    try {
+        mx::array idx = mx::array(indices.data(), {static_cast<int>(indices.size())}, mx::int32);
+        mx::array result = mx::take(mlx_utils::to_mlx_auto(input), idx, axis);
+        auto mlx_shape = result.shape();
+        std::vector<size_t> result_shape(mlx_shape.begin(), mlx_shape.end());
+        return Tensor(std::make_shared<MLXBuffer>(result), result_shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX take failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::take(const Tensor& input, const Tensor& indices, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    VALIDATE_MLX_TENSOR(indices);
+    try {
+        mx::array result = mx::take(mlx_utils::to_mlx_auto(input),
+                                    mlx_utils::to_mlx_auto(indices), axis);
+        auto sh = result.shape();
+        std::vector<size_t> shape(sh.begin(), sh.end());
+        return Tensor(std::make_shared<MLXBuffer>(result), shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX take (tensor idx) failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::topk_indices(const Tensor& input, int k, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    try {
+        auto x = mlx_utils::to_mlx_auto(input);
+        // argsort of negated values → indices in descending order
+        auto sorted_idx = mx::argsort(mx::negative(x), axis);
+        // Select first k indices along the axis using a range index array
+        std::vector<int> range(k);
+        std::iota(range.begin(), range.end(), 0);
+        mx::array range_arr(range.data(), {k}, mx::int32);
+        auto topk_idx = mx::take(sorted_idx, range_arr, axis);
+        auto sh = topk_idx.shape();
+        std::vector<size_t> shape(sh.begin(), sh.end());
+        return Tensor(std::make_shared<MLXBuffer>(topk_idx), shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX topk_indices failed: ") + e.what()});
     }
 }
 

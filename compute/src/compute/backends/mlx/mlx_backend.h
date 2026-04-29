@@ -76,6 +76,9 @@ public:
     Result<Tensor> slice(const Tensor& input, int start, int stop, int axis = 0) override;
     Result<Tensor> repeat(const Tensor& input, int repeats, int axis) override;
     Result<Tensor> triu(const Tensor& input, int k = 0) override;
+    Result<Tensor> take(const Tensor& input, const std::vector<int>& indices, int axis = 0) override;
+    Result<Tensor> take(const Tensor& input, const Tensor& indices, int axis = 0) override;
+    Result<Tensor> topk_indices(const Tensor& input, int k, int axis = -1) override;
 
     // Optimized transformer operations using MLX fast implementations
     Result<Tensor> rms_norm(const Tensor& input, const Tensor& weight, float eps) override;

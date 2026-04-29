@@ -217,6 +217,38 @@ public:
      */
     virtual Result<Tensor> triu(const Tensor& input, int k = 0) = 0;
 
+    /**
+     * Gather rows by index along an axis (numpy-style take, CPU indices).
+     * take(input, {2,0,5}, axis=0) returns rows input[2], input[0], input[5].
+     */
+    virtual Result<Tensor> take(
+        const Tensor&           input,
+        const std::vector<int>& indices,
+        int                     axis = 0) = 0;
+
+    /**
+     * Gather rows by index along an axis (GPU tensor indices — no CPU roundtrip).
+     * Equivalent to the CPU-index overload but indices remain on the GPU,
+     * enabling fully lazy evaluation with no mx::eval() sync point.
+     */
+    virtual Result<Tensor> take(
+        const Tensor& input,
+        const Tensor& indices,
+        int           axis = 0) = 0;
+
+    /**
+     * Return the indices of the top-k largest values along an axis.
+     * Result shape: same as input with the given axis replaced by k.
+     * Indices are returned as a GPU-resident tensor (no CPU extraction).
+     * @param input Source tensor
+     * @param k     Number of top elements to select
+     * @param axis  Axis to reduce (default -1 for last axis)
+     */
+    virtual Result<Tensor> topk_indices(
+        const Tensor& input,
+        int           k,
+        int           axis = -1) = 0;
+
     // Optimized transformer operations
 
     /**

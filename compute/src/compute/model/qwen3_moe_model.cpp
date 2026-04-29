@@ -204,90 +204,218 @@ Result<Tensor> Qwen3MoeModel::expert_linear(
 
 Result<Tensor> Qwen3MoeModel::moe_mlp(const Tensor& input, int layer_idx) {
     const std::string pfx = "language_model.model.layers." + std::to_string(layer_idx) + ".mlp.";
+    const std::string sw  = pfx + "switch_mlp.";
 
     size_t num_experts = config_.num_experts.value_or(256);
     size_t top_k       = config_.num_experts_per_tok.value_or(8);
     size_t seq         = input.shape()[0];
     size_t hidden      = input.shape()[1];
+    int    gs          = config_.quantization ? config_.quantization->group_size : 64;
 
-    // Router: gate logits → softmax probabilities
+    // Router gate logits [seq, num_experts] — computed once, shared by both paths
     auto gate_logits = linear(input, pfx + "gate");
     if (!gate_logits) return std::unexpected(gate_logits.error());
-    auto gate_probs = backend_->softmax(*gate_logits, -1);
-    if (!gate_probs) return std::unexpected(gate_probs.error());
 
-    // Extract probabilities to CPU for top-k selection
-    std::vector<float> probs_cpu(seq * num_experts);
-    {
-        auto flat = backend_->reshape(*gate_probs, {seq * num_experts});
-        if (!flat) return std::unexpected(flat.error());
-        auto ex = backend_->extract(*flat, probs_cpu);
-        if (!ex) return std::unexpected(ex.error());
-    }
+    // ── Switch expert computation ─────────────────────────────────────────────
+    auto switch_out = [&]() -> Result<Tensor> {
+    if (seq == 1) {
+        // ── GPU-side decode routing (zero CPU-GPU syncs) ──────────────────────
+        // All routing and expert computation stays lazy on GPU.
+        // topk_indices on 1-D logit vector → no extract() needed.
 
-    // Per-token expert selection (top-k by score, then normalize)
-    struct ES { int idx; float score; };
-    std::vector<std::vector<ES>> selected(seq);
-    for (size_t t = 0; t < seq; ++t) {
-        float* row = probs_cpu.data() + t * num_experts;
-        std::vector<ES> cands(num_experts);
-        for (size_t e = 0; e < num_experts; ++e) cands[e] = {(int)e, row[e]};
-        std::partial_sort(cands.begin(), cands.begin() + top_k, cands.end(),
-                          [](const ES& a, const ES& b){ return a.score > b.score; });
-        selected[t].assign(cands.begin(), cands.begin() + top_k);
-        float sum = 0.0f;
-        for (auto& es : selected[t]) sum += es.score;
-        if (sum > 1e-8f)
-            for (auto& es : selected[t]) es.score /= sum;
-    }
+        auto logits_1d = backend_->reshape(*gate_logits, {num_experts});
+        if (!logits_1d) return std::unexpected(logits_1d.error());
 
-    // Compute switched expert outputs per token
-    std::vector<Tensor> token_outs;
-    token_outs.reserve(seq);
-    for (size_t t = 0; t < seq; ++t) {
-        auto tok3 = backend_->slice(input, (int)t, (int)t + 1, 0);
-        if (!tok3) return std::unexpected(tok3.error());
-        auto tok = backend_->reshape(*tok3, {1, hidden});
-        if (!tok) return std::unexpected(tok.error());
+        // Top-k expert indices as GPU tensor [top_k]
+        auto topk_idx = backend_->topk_indices(*logits_1d, (int)top_k, 0);
+        if (!topk_idx) return std::unexpected(topk_idx.error());
 
-        std::optional<Tensor> acc;
-        for (auto& es : selected[t]) {
-            auto g_out = expert_linear(*tok, pfx + "switch_mlp.gate_proj", es.idx);
-            if (!g_out) return std::unexpected(g_out.error());
-            auto u_out = expert_linear(*tok, pfx + "switch_mlp.up_proj", es.idx);
-            if (!u_out) return std::unexpected(u_out.error());
-            auto act = backend_->silu(*g_out);
-            if (!act) return std::unexpected(act.error());
-            auto h = backend_->multiply(*act, *u_out);
-            if (!h) return std::unexpected(h.error());
-            auto out = expert_linear(*h, pfx + "switch_mlp.down_proj", es.idx);
-            if (!out) return std::unexpected(out.error());
+        // Routing scores: softmax of top-k logits (= renormalized top-k probs)
+        auto topk_logits = backend_->take(*logits_1d, *topk_idx, 0);
+        if (!topk_logits) return std::unexpected(topk_logits.error());
+        auto scores_1d = backend_->softmax(*topk_logits, -1);
+        if (!scores_1d) return std::unexpected(scores_1d.error());
+        auto normed_scores = backend_->reshape(*scores_1d, {1, top_k}); // [1, top_k]
+        if (!normed_scores) return std::unexpected(normed_scores.error());
 
-            // Scale by router score
-            Tensor score_t = backend_->create_tensor(
-                std::span<const float>(&es.score, 1), {1});
-            auto scaled = backend_->multiply(*out, score_t);
-            if (!scaled) return std::unexpected(scaled.error());
+        const size_t k = top_k;
 
-            if (!acc) { acc = std::move(*scaled); }
-            else {
-                auto added = backend_->add(*acc, *scaled);
-                if (!added) return std::unexpected(added.error());
-                acc = std::move(*added);
+        auto gw3 = get_weight(sw + "gate_proj.weight"); if (!gw3) return std::unexpected(gw3.error());
+        auto gs3 = get_weight(sw + "gate_proj.scales"); if (!gs3) return std::unexpected(gs3.error());
+        auto uw3 = get_weight(sw + "up_proj.weight");   if (!uw3) return std::unexpected(uw3.error());
+        auto us3 = get_weight(sw + "up_proj.scales");   if (!us3) return std::unexpected(us3.error());
+        auto dw3 = get_weight(sw + "down_proj.weight"); if (!dw3) return std::unexpected(dw3.error());
+        auto ds3 = get_weight(sw + "down_proj.scales"); if (!ds3) return std::unexpected(ds3.error());
+
+        auto gb_it = weights_.find(sw + "gate_proj.biases");
+        auto ub_it = weights_.find(sw + "up_proj.biases");
+        auto db_it = weights_.find(sw + "down_proj.biases");
+
+        int bits = infer_quant_bits(*gw3, *gs3);
+
+        // Gather k expert weight slices via GPU-tensor indices (one take per tensor)
+        auto gw_k = backend_->take(*gw3, *topk_idx, 0); if (!gw_k) return std::unexpected(gw_k.error());
+        auto gs_k = backend_->take(*gs3, *topk_idx, 0); if (!gs_k) return std::unexpected(gs_k.error());
+        auto uw_k = backend_->take(*uw3, *topk_idx, 0); if (!uw_k) return std::unexpected(uw_k.error());
+        auto us_k = backend_->take(*us3, *topk_idx, 0); if (!us_k) return std::unexpected(us_k.error());
+        auto dw_k = backend_->take(*dw3, *topk_idx, 0); if (!dw_k) return std::unexpected(dw_k.error());
+        auto ds_k = backend_->take(*ds3, *topk_idx, 0); if (!ds_k) return std::unexpected(ds_k.error());
+
+        // Stack gate + up weights: [k, out, in_p] → [k*out, in_p]
+        const size_t out_e  = gw3->shape()[1];
+        const size_t in_p   = gw3->shape()[2];
+        const size_t gss    = gs3->shape()[2];
+
+        auto gw2 = backend_->reshape(*gw_k, {k * out_e, in_p});  if (!gw2) return std::unexpected(gw2.error());
+        auto gs2 = backend_->reshape(*gs_k, {k * out_e, gss});   if (!gs2) return std::unexpected(gs2.error());
+        auto uw2 = backend_->reshape(*uw_k, {k * out_e, in_p});  if (!uw2) return std::unexpected(uw2.error());
+        auto us2 = backend_->reshape(*us_k, {k * out_e, gss});   if (!us2) return std::unexpected(us2.error());
+
+        std::optional<Tensor> gb2, ub2;
+        if (gb_it != weights_.end()) {
+            auto gb_k = backend_->take(gb_it->second, *topk_idx, 0); if (!gb_k) return std::unexpected(gb_k.error());
+            auto r = backend_->reshape(*gb_k, {k * out_e, gb_it->second.shape()[2]}); if (!r) return std::unexpected(r.error());
+            gb2 = std::move(*r);
+        }
+        if (ub_it != weights_.end()) {
+            auto ub_k = backend_->take(ub_it->second, *topk_idx, 0); if (!ub_k) return std::unexpected(ub_k.error());
+            auto r = backend_->reshape(*ub_k, {k * out_e, ub_it->second.shape()[2]}); if (!r) return std::unexpected(r.error());
+            ub2 = std::move(*r);
+        }
+
+        // Single quantized_matmul for all k gate projections: [1,hidden] × [k*out,in_p]^T → [1, k*out]
+        auto gate_k = backend_->quantized_matmul(input, *gw2, *gs2, gb2 ? &*gb2 : nullptr, true, gs, bits, "affine");
+        if (!gate_k) return std::unexpected(gate_k.error());
+        auto up_k = backend_->quantized_matmul(input, *uw2, *us2, ub2 ? &*ub2 : nullptr, true, gs, bits, "affine");
+        if (!up_k) return std::unexpected(up_k.error());
+
+        // Reshape [1, k*out] → [k, out] for per-expert activation
+        auto gate_ke = backend_->reshape(*gate_k, {k, out_e}); if (!gate_ke) return std::unexpected(gate_ke.error());
+        auto up_ke   = backend_->reshape(*up_k,   {k, out_e}); if (!up_ke)   return std::unexpected(up_ke.error());
+
+        auto act  = backend_->silu(*gate_ke);          if (!act)  return std::unexpected(act.error());
+        auto h_ke = backend_->multiply(*act, *up_ke);  if (!h_ke) return std::unexpected(h_ke.error()); // [k, out]
+
+        // Down projection: k matmuls (each expert has different h_ke[i]).
+        // Weights already gathered contiguously in dw_k/ds_k → sequential slices = cache-friendly.
+        const size_t down_out = dw3->shape()[1];
+        const size_t int_p    = dw3->shape()[2];
+        const size_t dss      = ds3->shape()[2];
+
+        std::optional<Tensor> db_k;
+        if (db_it != weights_.end()) {
+            auto r = backend_->take(db_it->second, *topk_idx, 0);
+            if (!r) return std::unexpected(r.error());
+            db_k = std::move(*r);
+        }
+
+        std::vector<Tensor> down_outs;
+        down_outs.reserve(k);
+        for (size_t i = 0; i < k; ++i) {
+            auto h_i   = backend_->slice(*h_ke, (int)i, (int)i + 1, 0); if (!h_i)   return std::unexpected(h_i.error());
+
+            auto dw_i3 = backend_->slice(*dw_k,  (int)i, (int)i + 1, 0); if (!dw_i3) return std::unexpected(dw_i3.error());
+            auto dw_i  = backend_->reshape(*dw_i3, {down_out, int_p});    if (!dw_i)  return std::unexpected(dw_i.error());
+
+            auto dsi_3 = backend_->slice(*ds_k,  (int)i, (int)i + 1, 0); if (!dsi_3) return std::unexpected(dsi_3.error());
+            auto dsi   = backend_->reshape(*dsi_3, {down_out, dss});      if (!dsi)   return std::unexpected(dsi.error());
+
+            std::optional<Tensor> db_i;
+            if (db_k) {
+                auto dbi_3 = backend_->slice(*db_k, (int)i, (int)i + 1, 0); if (!dbi_3) return std::unexpected(dbi_3.error());
+                auto dbi   = backend_->reshape(*dbi_3, {down_out, db_it->second.shape()[2]}); if (!dbi) return std::unexpected(dbi.error());
+                db_i = std::move(*dbi);
             }
-        }
-        if (!acc) {
-            // Fallback: zero tensor (shouldn't happen with top_k > 0)
-            std::vector<float> z(hidden, 0.0f);
-            acc = backend_->create_tensor(z, {1, hidden});
-        }
-        token_outs.push_back(std::move(*acc));
-    }
 
-    // Concatenate token outputs → [seq, hidden]
-    Result<Tensor> switch_out = (token_outs.size() == 1)
-        ? Result<Tensor>{token_outs[0]}
-        : backend_->concatenate(token_outs, 0);
+            auto out_i = backend_->quantized_matmul(
+                *h_i, *dw_i, *dsi, db_i ? &*db_i : nullptr, true, gs, bits, "affine");
+            if (!out_i) return std::unexpected(out_i.error());
+            down_outs.push_back(std::move(*out_i));
+        }
+
+        // Concatenate [k × [1, hidden]] → [k, hidden], then score-weighted sum via matmul
+        auto down_all = backend_->concatenate(down_outs, 0); // [k, hidden]
+        if (!down_all) return std::unexpected(down_all.error());
+
+        // normed_scores [1, top_k] @ down_all [top_k, hidden] → [1, hidden] (all GPU)
+        return backend_->matmul(*normed_scores, *down_all);
+
+    } else {
+        // ── CPU-side prefill routing (seq > 1) ────────────────────────────────
+        // Extract + CPU top-k is acceptable for prefill (one-time cost per prompt).
+        auto gate_probs = backend_->softmax(*gate_logits, -1);
+        if (!gate_probs) return std::unexpected(gate_probs.error());
+
+        std::vector<float> probs_cpu(seq * num_experts);
+        {
+            auto flat = backend_->reshape(*gate_probs, {seq * num_experts});
+            if (!flat) return std::unexpected(flat.error());
+            auto ex = backend_->extract(*flat, probs_cpu);
+            if (!ex) return std::unexpected(ex.error());
+        }
+
+        struct ES { int idx; float score; };
+        std::vector<std::vector<ES>> selected(seq);
+        for (size_t t = 0; t < seq; ++t) {
+            float* row = probs_cpu.data() + t * num_experts;
+            std::vector<ES> cands(num_experts);
+            for (size_t e = 0; e < num_experts; ++e) cands[e] = {(int)e, row[e]};
+            std::partial_sort(cands.begin(), cands.begin() + top_k, cands.end(),
+                              [](const ES& a, const ES& b){ return a.score > b.score; });
+            selected[t].assign(cands.begin(), cands.begin() + top_k);
+            float sum = 0.0f;
+            for (auto& es : selected[t]) sum += es.score;
+            if (sum > 1e-8f)
+                for (auto& es : selected[t]) es.score /= sum;
+        }
+
+        // Sequential per-token expert loop
+        std::vector<Tensor> token_outs;
+        token_outs.reserve(seq);
+        for (size_t t = 0; t < seq; ++t) {
+            auto tok3 = backend_->slice(input, (int)t, (int)t + 1, 0);
+            if (!tok3) return std::unexpected(tok3.error());
+            auto tok = backend_->reshape(*tok3, {1, hidden});
+            if (!tok) return std::unexpected(tok.error());
+
+            std::optional<Tensor> acc;
+            for (auto& es : selected[t]) {
+                auto g_out = expert_linear(*tok, sw + "gate_proj", es.idx);
+                if (!g_out) return std::unexpected(g_out.error());
+                auto u_out = expert_linear(*tok, sw + "up_proj", es.idx);
+                if (!u_out) return std::unexpected(u_out.error());
+                auto act = backend_->silu(*g_out);
+                if (!act) return std::unexpected(act.error());
+                auto h = backend_->multiply(*act, *u_out);
+                if (!h) return std::unexpected(h.error());
+                auto out = expert_linear(*h, sw + "down_proj", es.idx);
+                if (!out) return std::unexpected(out.error());
+
+                Tensor score_t = backend_->create_tensor(
+                    std::span<const float>(&es.score, 1), {1});
+                auto scaled = backend_->multiply(*out, score_t);
+                if (!scaled) return std::unexpected(scaled.error());
+
+                if (!acc) { acc = std::move(*scaled); }
+                else {
+                    auto added = backend_->add(*acc, *scaled);
+                    if (!added) return std::unexpected(added.error());
+                    acc = std::move(*added);
+                }
+            }
+            if (!acc) {
+                std::vector<float> z(hidden, 0.0f);
+                acc = backend_->create_tensor(z, {1, hidden});
+            }
+            token_outs.push_back(std::move(*acc));
+        }
+
+        return (token_outs.size() == 1)
+            ? Result<Tensor>{token_outs[0]}
+            : backend_->concatenate(token_outs, 0);
+    }
+    }();
+
     if (!switch_out) return std::unexpected(switch_out.error());
 
     // Shared expert: standard SwiGLU MLP

@@ -1770,3 +1770,48 @@ TEST(MLXBackendTest, MLXBackendScaledDotProductAttention) {
         EXPECT_FALSE(std::isinf(val)) << "Output contains Inf";
     }
 }
+
+TEST(MLXBackendTest, MLXBackendTopkIndices) {
+    auto backend_result = BackendFactory::create(BackendType::MLX);
+    if (!backend_result) GTEST_SKIP() << "MLX backend not available";
+    auto& backend = *backend_result;
+    ASSERT_TRUE(backend->initialize());
+
+    // scores: [3.0, 1.0, 4.0, 1.5, 2.0] — top-2 should be indices 2 (4.0) and 0 (3.0)
+    std::vector<float> data = {3.0f, 1.0f, 4.0f, 1.5f, 2.0f};
+    auto t = backend->create_tensor(std::span<const float>(data), {5});
+    auto idx_result = backend->topk_indices(t, 2, 0);
+    ASSERT_TRUE(idx_result);
+    EXPECT_EQ(idx_result->shape(), (std::vector<size_t>{2}));
+
+    std::vector<float> idx_f(2);
+    ASSERT_TRUE(backend->extract(*idx_result, std::span<float>(idx_f)));
+    std::vector<int> idx = {(int)idx_f[0], (int)idx_f[1]};
+    std::sort(idx.begin(), idx.end());
+    EXPECT_EQ(idx[0], 0);
+    EXPECT_EQ(idx[1], 2);
+}
+
+TEST(MLXBackendTest, MLXBackendTakeTensor) {
+    auto backend_result = BackendFactory::create(BackendType::MLX);
+    if (!backend_result) GTEST_SKIP() << "MLX backend not available";
+    auto& backend = *backend_result;
+    ASSERT_TRUE(backend->initialize());
+
+    // source: [[1,2,3],[4,5,6],[7,8,9]]
+    std::vector<float> data = {1.f,2.f,3.f, 4.f,5.f,6.f, 7.f,8.f,9.f};
+    auto src = backend->create_tensor(std::span<const float>(data), {3, 3});
+
+    // Use topk_indices to get index 1 (score 9.0) then take that row via Tensor overload
+    std::vector<float> scores = {1.f, 9.f, 3.f};
+    auto s = backend->create_tensor(std::span<const float>(scores), {3});
+    auto top1 = backend->topk_indices(s, 1, 0);
+    ASSERT_TRUE(top1);
+    auto picked = backend->take(src, *top1, 0);  // row 1 = [4,5,6]
+    ASSERT_TRUE(picked);
+    std::vector<float> row(3);
+    ASSERT_TRUE(backend->extract(*picked, std::span<float>(row)));
+    EXPECT_FLOAT_EQ(row[0], 4.f);
+    EXPECT_FLOAT_EQ(row[1], 5.f);
+    EXPECT_FLOAT_EQ(row[2], 6.f);
+}
