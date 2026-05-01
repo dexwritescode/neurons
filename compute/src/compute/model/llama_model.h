@@ -1,26 +1,11 @@
 #pragma once
 
 #include "language_model.h"
-#include "../core/tensor.h"
+#include "kv_cache.h"
 #include <optional>
 #include <unordered_map>
 
 namespace compute {
-
-/**
- * Per-layer KV cache for efficient autoregressive decoding.
- * Keys/values are stored post-RoPE so they can be directly concatenated
- * with new tokens during decode without re-applying positional encoding.
- *
- * Shape when valid:
- *   keys:   [n_kv_heads, seq_so_far, head_dim]
- *   values: [n_kv_heads, seq_so_far, head_dim]
- */
-struct LayerKVCache {
-    std::optional<Tensor> keys;
-    std::optional<Tensor> values;
-    bool valid = false;
-};
 
 /**
  * Concrete LanguageModel for all Llama-family and Mistral-family models.

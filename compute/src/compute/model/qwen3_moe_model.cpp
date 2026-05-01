@@ -33,9 +33,7 @@ Qwen3MoeModel::Qwen3MoeModel(
     SimpleBpeTokenizer                      tokenizer,
     std::unordered_map<std::string, Tensor> weights,
     ComputeBackend*                         backend)
-    : config_(std::move(config))
-    , tokenizer_(std::move(tokenizer))
-    , weights_(std::move(weights))
+    : Qwen3MoeModelBase(std::move(config), std::move(tokenizer), std::move(weights))
     , backend_(backend)
 {}
 
@@ -127,21 +125,6 @@ void Qwen3MoeModel::reset_cache() {
 #endif
 }
 
-size_t Qwen3MoeModel::num_parameters() const {
-    size_t total = 0;
-    for (const auto& [name, tensor] : weights_) total += tensor.size();
-    return total;
-}
-
-// ── Weight lookup ─────────────────────────────────────────────────────────────
-
-Result<Tensor> Qwen3MoeModel::get_weight(const std::string& name) const {
-    auto it = weights_.find(name);
-    if (it == weights_.end())
-        return std::unexpected(Error{ErrorCode::InvalidModel, "Weight not found: " + name});
-    return it->second;
-}
-
 // ── Embedding ─────────────────────────────────────────────────────────────────
 
 Result<Tensor> Qwen3MoeModel::embedding(const std::vector<int>& token_ids) {
@@ -185,18 +168,6 @@ Result<Tensor> Qwen3MoeModel::embedding(const std::vector<int>& token_ids) {
     }
 
     return backend_->concatenate(rows, 0);
-}
-
-// ── Quantization bit inference ────────────────────────────────────────────────
-
-int Qwen3MoeModel::infer_quant_bits(const Tensor& w, const Tensor& scales) const {
-    size_t in_packed = w.shape().back();
-    size_t groups    = scales.shape().back();
-    size_t gs = config_.quantization ? config_.quantization->group_size : 64;
-    // bits * gs / 32 = in_packed / groups  →  bits = 32 * (in_packed/groups) / gs
-    double ratio = static_cast<double>(in_packed) / static_cast<double>(groups);
-    int bits = static_cast<int>(std::round(32.0 * ratio / static_cast<double>(gs)));
-    return (bits > 0) ? bits : 4;
 }
 
 // ── Linear projection ─────────────────────────────────────────────────────────

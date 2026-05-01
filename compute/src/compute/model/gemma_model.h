@@ -1,28 +1,11 @@
 #pragma once
 
 #include "language_model.h"
-#include "../core/tensor.h"
+#include "kv_cache.h"
 #include <optional>
 #include <unordered_map>
 
 namespace compute {
-
-/**
- * Per-layer KV cache for Gemma (same shape convention as LlamaModel).
- *
- * Gemma3 has local (sliding-window) and global layers.
- * For the first implementation we store all keys/values without
- * window truncation (correct for short sequences, conservative for long ones).
- *
- * Shape when valid:
- *   keys:   [n_kv_heads, seq_so_far, head_dim]
- *   values: [n_kv_heads, seq_so_far, head_dim]
- */
-struct GemmaLayerKVCache {
-    std::optional<Tensor> keys;
-    std::optional<Tensor> values;
-    bool valid = false;
-};
 
 /**
  * LanguageModel implementation for Gemma/Gemma2/Gemma3 model families.

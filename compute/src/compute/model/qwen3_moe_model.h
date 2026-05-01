@@ -1,8 +1,8 @@
 #pragma once
 
 #include "language_model.h"
-#include "llama_model.h"
-#include "../core/tensor.h"
+#include "qwen3_moe_model_base.h"
+#include "kv_cache.h"
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -21,7 +21,7 @@ namespace compute {
  *
  * Weight prefix: language_model.model.layers.{i}.*
  */
-class Qwen3MoeModel final : public LanguageModel {
+class Qwen3MoeModel final : public Qwen3MoeModelBase, public LanguageModel {
 public:
     static Result<Qwen3MoeModel> from_model_dir(
         const std::filesystem::path& model_dir,
@@ -37,7 +37,7 @@ public:
     const std::string&        model_type()     const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
     ComputeBackend*           backend()        const override { return backend_; }
-    size_t                    num_parameters() const override;
+    size_t num_parameters() const override { return Qwen3MoeModelBase::num_parameters(); }
 
 private:
     // Per-SSM-layer state (GatedDeltaNet)
@@ -55,12 +55,7 @@ private:
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    Result<Tensor> get_weight(const std::string& name) const;
-
     Result<Tensor> embedding(const std::vector<int>& token_ids);
-
-    // Infer quantization bits from weight/scales shape (handles 4-bit and 8-bit layers).
-    int infer_quant_bits(const Tensor& w, const Tensor& scales) const;
 
     // Linear projection: dispatches to quantized_matmul or matmul.
     // Uses infer_quant_bits so gate layers (8-bit) work correctly.
@@ -88,10 +83,7 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────────
 
-    ModelConfig                             config_;
-    SimpleBpeTokenizer                      tokenizer_;
-    std::unordered_map<std::string, Tensor> weights_;
-    ComputeBackend*                         backend_;
+    ComputeBackend* backend_;
 
     std::optional<Tensor>     dequantized_embed_tokens_;
     std::vector<LayerKVCache> kv_cache_;

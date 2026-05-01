@@ -55,6 +55,7 @@ add_library(compute_backend
     src/compute/model/language_model.cpp
     src/compute/model/llama_model.cpp
     src/compute/model/gemma_model.cpp
+    src/compute/model/qwen3_moe_model_base.cpp
     src/compute/model/qwen3_moe_model.cpp
     ${BACKEND_SOURCES}
 )
