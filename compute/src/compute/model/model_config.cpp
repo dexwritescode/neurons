@@ -29,11 +29,17 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
         auto json = nlohmann::json::parse(json_str);
         ModelConfig config;
 
-        // Multimodal models (e.g. Gemma3ForConditionalGeneration) store the text
-        // model config nested under "text_config".  Extract it and overlay any
-        // top-level fields that text_config may be missing (eos_token_id, quantization).
+        // Multimodal models store the text model config nested under "text_config".
+        // Extract it and overlay top-level fields that text_config may be missing or wrong.
         if (json.contains("text_config") && !json["text_config"].is_null()) {
             auto text_json = json["text_config"];
+            // Prefer top-level model_type (e.g. "qwen3_5_moe") over the inner one
+            // (e.g. "qwen3_5_moe_text") which is an implementation detail.
+            if (json.contains("model_type") && !json["model_type"].is_null())
+                text_json["model_type"] = json["model_type"];
+            // Top-level architectures take precedence.
+            if (json.contains("architectures") && !json["architectures"].is_null())
+                text_json["architectures"] = json["architectures"];
             if (!text_json.contains("eos_token_id") || text_json["eos_token_id"].is_null()) {
                 if (json.contains("eos_token_id") && !json["eos_token_id"].is_null())
                     text_json["eos_token_id"] = json["eos_token_id"];
@@ -71,10 +77,15 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
         }
         config.num_key_value_heads = json["num_key_value_heads"].get<size_t>();
 
-        if (!json.contains("intermediate_size")) {
-            return std::unexpected(Error{ErrorCode::InvalidInput, "Missing required field: intermediate_size"});
+        // MoE models use moe_intermediate_size instead of intermediate_size.
+        if (json.contains("intermediate_size") && !json["intermediate_size"].is_null()) {
+            config.intermediate_size = json["intermediate_size"].get<size_t>();
+        } else if (json.contains("moe_intermediate_size") && !json["moe_intermediate_size"].is_null()) {
+            config.intermediate_size = json["moe_intermediate_size"].get<size_t>();
+        } else {
+            return std::unexpected(Error{ErrorCode::InvalidInput,
+                "Missing required field: intermediate_size (or moe_intermediate_size)"});
         }
-        config.intermediate_size = json["intermediate_size"].get<size_t>();
 
         if (!json.contains("max_position_embeddings")) {
             return std::unexpected(Error{ErrorCode::InvalidInput, "Missing required field: max_position_embeddings"});
@@ -87,10 +98,15 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
         }
         config.rms_norm_eps = json["rms_norm_eps"].get<float>();
 
-        if (!json.contains("rope_theta")) {
-            return std::unexpected(Error{ErrorCode::InvalidInput, "Missing required field: rope_theta"});
+        // Some models (e.g. qwen3_5_moe) nest rope_theta inside rope_parameters.
+        if (json.contains("rope_theta") && !json["rope_theta"].is_null()) {
+            config.rope_theta = json["rope_theta"].get<float>();
+        } else if (json.contains("rope_parameters") && json["rope_parameters"].contains("rope_theta")) {
+            config.rope_theta = json["rope_parameters"]["rope_theta"].get<float>();
+        } else {
+            return std::unexpected(Error{ErrorCode::InvalidInput,
+                "Missing required field: rope_theta (or rope_parameters.rope_theta)"});
         }
-        config.rope_theta = json["rope_theta"].get<float>();
 
         // hidden_act: Gemma uses "hidden_activation" instead of "hidden_act"
         if (json.contains("hidden_act") && !json["hidden_act"].is_null()) {
@@ -192,6 +208,50 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
             config.rope_local_base_freq = json["rope_local_base_freq"].get<float>();
         }
 
+        // Parse Qwen3.5 MoE optional fields
+        if (json.contains("layer_types") && json["layer_types"].is_array()) {
+            config.layer_types = json["layer_types"].get<std::vector<std::string>>();
+        }
+        if (json.contains("num_experts") && !json["num_experts"].is_null()) {
+            config.num_experts = json["num_experts"].get<size_t>();
+        }
+        if (json.contains("num_experts_per_tok") && !json["num_experts_per_tok"].is_null()) {
+            config.num_experts_per_tok = json["num_experts_per_tok"].get<size_t>();
+        }
+        if (json.contains("moe_intermediate_size") && !json["moe_intermediate_size"].is_null()) {
+            config.moe_intermediate_size = json["moe_intermediate_size"].get<size_t>();
+        }
+        if (json.contains("shared_expert_intermediate_size") && !json["shared_expert_intermediate_size"].is_null()) {
+            config.shared_expert_intermediate_size = json["shared_expert_intermediate_size"].get<size_t>();
+        }
+        if (json.contains("linear_conv_kernel_dim") && !json["linear_conv_kernel_dim"].is_null()) {
+            config.linear_conv_kernel_dim = json["linear_conv_kernel_dim"].get<size_t>();
+        }
+        if (json.contains("linear_key_head_dim") && !json["linear_key_head_dim"].is_null()) {
+            config.linear_key_head_dim = json["linear_key_head_dim"].get<size_t>();
+        }
+        if (json.contains("linear_num_key_heads") && !json["linear_num_key_heads"].is_null()) {
+            config.linear_num_key_heads = json["linear_num_key_heads"].get<size_t>();
+        }
+        if (json.contains("linear_num_value_heads") && !json["linear_num_value_heads"].is_null()) {
+            config.linear_num_value_heads = json["linear_num_value_heads"].get<size_t>();
+        }
+        if (json.contains("linear_value_head_dim") && !json["linear_value_head_dim"].is_null()) {
+            config.linear_value_head_dim = json["linear_value_head_dim"].get<size_t>();
+        }
+        if (json.contains("attn_output_gate") && !json["attn_output_gate"].is_null()) {
+            config.attn_output_gate = json["attn_output_gate"].get<bool>();
+        }
+        if (json.contains("partial_rotary_factor") && !json["partial_rotary_factor"].is_null()) {
+            config.partial_rotary_factor = json["partial_rotary_factor"].get<float>();
+        }
+        if (json.contains("mrope_interleaved") && !json["mrope_interleaved"].is_null()) {
+            config.mrope_interleaved = json["mrope_interleaved"].get<bool>();
+        }
+        if (json.contains("mrope_section") && json["mrope_section"].is_array()) {
+            config.mrope_section = json["mrope_section"].get<std::vector<int>>();
+        }
+
         // Parse OPTIONAL metadata
         if (json.contains("_name_or_path") && !json["_name_or_path"].is_null()) {
             config.name_or_path = json["_name_or_path"].get<std::string>();
@@ -251,7 +311,8 @@ bool ModelConfig::is_valid() const {
 
 bool ModelConfig::is_supported_architecture() const {
     return is_llama_architecture() || is_mistral_architecture() ||
-           is_qwen2_architecture() || is_gemma_architecture();
+           is_qwen2_architecture() || is_gemma_architecture() ||
+           is_qwen3_moe_architecture();
 }
 
 bool ModelConfig::is_llama_architecture() const {
@@ -273,6 +334,10 @@ bool ModelConfig::is_qwen2_architecture() const {
     for (const auto& arch : architectures)
         if (arch == "Qwen2ForCausalLM" || arch == "Qwen3ForCausalLM") return true;
     return false;
+}
+
+bool ModelConfig::is_qwen3_moe_architecture() const {
+    return model_type == "qwen3_5_moe";
 }
 
 bool ModelConfig::is_gemma_architecture() const {

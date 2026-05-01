@@ -122,6 +122,40 @@ public:
      */
     virtual Result<Tensor> gelu(const Tensor& input) = 0;
 
+    /**
+     * Sigmoid activation: 1 / (1 + exp(-x))
+     */
+    virtual Result<Tensor> sigmoid(const Tensor& input) = 0;
+
+    /**
+     * Softplus activation: log(1 + exp(x))
+     */
+    virtual Result<Tensor> softplus(const Tensor& input) = 0;
+
+    /**
+     * Element-wise exponential: e^x
+     */
+    virtual Result<Tensor> exp(const Tensor& input) = 0;
+
+    /**
+     * Element-wise subtraction: a - b (supports broadcasting)
+     */
+    virtual Result<Tensor> subtract(const Tensor& a, const Tensor& b) = 0;
+
+    /**
+     * 1D convolution (channels-last layout: input [N, L, C_in], weight [C_out, kW, C_in/groups])
+     * @param input   [N, L, C_in] or [L, C_in] (batch dim added if missing)
+     * @param weight  [C_out, kernel_size, C_in/groups]
+     * @param stride  Convolution stride (default 1)
+     * @param padding Zero-padding applied symmetrically on both sides (default 0)
+     * @param groups  Number of groups for grouped/depthwise conv (default 1)
+     */
+    virtual Result<Tensor> conv1d(
+        const Tensor& input,
+        const Tensor& weight,
+        int stride  = 1,
+        int padding = 0,
+        int groups  = 1) = 0;
 
     /**
      * Transpose tensor (general transpose - reverses dimension order)
@@ -182,6 +216,38 @@ public:
      * @param k Diagonal offset (0 = main diagonal, >0 = above, <0 = below)
      */
     virtual Result<Tensor> triu(const Tensor& input, int k = 0) = 0;
+
+    /**
+     * Gather rows by index along an axis (numpy-style take, CPU indices).
+     * take(input, {2,0,5}, axis=0) returns rows input[2], input[0], input[5].
+     */
+    virtual Result<Tensor> take(
+        const Tensor&           input,
+        const std::vector<int>& indices,
+        int                     axis = 0) = 0;
+
+    /**
+     * Gather rows by index along an axis (GPU tensor indices — no CPU roundtrip).
+     * Equivalent to the CPU-index overload but indices remain on the GPU,
+     * enabling fully lazy evaluation with no mx::eval() sync point.
+     */
+    virtual Result<Tensor> take(
+        const Tensor& input,
+        const Tensor& indices,
+        int           axis = 0) = 0;
+
+    /**
+     * Return the indices of the top-k largest values along an axis.
+     * Result shape: same as input with the given axis replaced by k.
+     * Indices are returned as a GPU-resident tensor (no CPU extraction).
+     * @param input Source tensor
+     * @param k     Number of top elements to select
+     * @param axis  Axis to reduce (default -1 for last axis)
+     */
+    virtual Result<Tensor> topk_indices(
+        const Tensor& input,
+        int           k,
+        int           axis = -1) = 0;
 
     // Optimized transformer operations
 

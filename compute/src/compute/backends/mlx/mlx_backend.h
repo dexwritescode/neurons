@@ -59,6 +59,12 @@ public:
     Result<Tensor> softmax(const Tensor& input, int dim = -1) override;
     Result<Tensor> silu(const Tensor& input) override;
     Result<Tensor> gelu(const Tensor& input) override;
+    Result<Tensor> sigmoid(const Tensor& input) override;
+    Result<Tensor> softplus(const Tensor& input) override;
+    Result<Tensor> exp(const Tensor& input) override;
+    Result<Tensor> subtract(const Tensor& a, const Tensor& b) override;
+    Result<Tensor> conv1d(const Tensor& input, const Tensor& weight,
+                          int stride = 1, int padding = 0, int groups = 1) override;
     Result<Tensor> transpose(const Tensor& input) override;
     Result<Tensor> swapaxes(const Tensor& input, int axis1, int axis2) override;
     Result<Tensor> reshape(const Tensor& input, const std::vector<size_t>& new_shape) override;
@@ -70,6 +76,9 @@ public:
     Result<Tensor> slice(const Tensor& input, int start, int stop, int axis = 0) override;
     Result<Tensor> repeat(const Tensor& input, int repeats, int axis) override;
     Result<Tensor> triu(const Tensor& input, int k = 0) override;
+    Result<Tensor> take(const Tensor& input, const std::vector<int>& indices, int axis = 0) override;
+    Result<Tensor> take(const Tensor& input, const Tensor& indices, int axis = 0) override;
+    Result<Tensor> topk_indices(const Tensor& input, int k, int axis = -1) override;
 
     // Optimized transformer operations using MLX fast implementations
     Result<Tensor> rms_norm(const Tensor& input, const Tensor& weight, float eps) override;

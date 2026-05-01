@@ -1,6 +1,7 @@
 #include "language_model.h"
 #include "llama_model.h"
 #include "gemma_model.h"
+#include "qwen3_moe_model.h"
 #include "model_loader.h"
 #include "sampler.h"
 #include <unordered_set>
@@ -79,9 +80,15 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
         return std::make_unique<GemmaModel>(std::move(*result));
     }
 
+    if (model_type == "qwen3_5_moe") {
+        auto result = Qwen3MoeModel::from_model_dir(model_dir, backend);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<Qwen3MoeModel>(std::move(*result));
+    }
+
     return std::unexpected(Error{ErrorCode::InvalidModel,
         "Unsupported model type: \"" + model_type +
-        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text"});
+        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe"});
 }
 
 } // namespace compute

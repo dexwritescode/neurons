@@ -7,6 +7,7 @@
 #define TINYLLAMA_MODEL_DIR "@TINYLLAMA_MODEL_PATH@"
 #define MISTRAL_MODEL_DIR   "@MISTRAL_MODEL_PATH@"
 #define QWEN2_MODEL_DIR     "@QWEN2_MODEL_PATH@"
+#define QWEN3MOE_MODEL_DIR  "@QWEN3MOE_MODEL_PATH@"
 
 // Helper macros for easy path construction
 #define TINYLLAMA_CONFIG_FILE TEST_RESOURCES_DIR "/tinyllama_config.json"

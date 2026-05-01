@@ -1,5 +1,4 @@
 #include "compute_backend.h"
-#include "backends/simd/neon_backend.h"
 #include "backends/mlx/mlx_backend.h"
 #include <vector>
 #include <memory>
@@ -9,29 +8,7 @@ namespace compute {
 // BackendFactory implementation
 Result<std::unique_ptr<ComputeBackend>> BackendFactory::create(BackendType type) {
     switch (type) {
-        case BackendType::SimdNeon:
-#ifdef __ARM_NEON
-            return std::make_unique<NeonBackend>();
-#else
-            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "NEON backend only available on ARM platforms with NEON support"});
-#endif
-            
-        case BackendType::Auto: {
-            // Try NEON (ARM CPU SIMD)
-#ifdef __ARM_NEON
-            auto neon_backend = std::make_unique<NeonBackend>();
-            if (neon_backend->is_available()) {
-                auto init_result = neon_backend->initialize();
-                if (init_result) {
-                    return std::move(neon_backend);
-                }
-            }
-#endif
-            // No viable backend found
-            return std::unexpected(Error{ErrorCode::BackendNotAvailable, 
-                "No compute backend available. LLM inference requires SIMD support (NEON/AVX2 on this platform)"});
-        }
-
+        case BackendType::Auto:
         case BackendType::MLX:
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
         {
@@ -48,9 +25,10 @@ Result<std::unique_ptr<ComputeBackend>> BackendFactory::create(BackendType type)
 #else
             return std::unexpected(Error{ErrorCode::BackendNotAvailable, "MLX backend only available on Apple Silicon with MLX enabled"});
 #endif
+
         case BackendType::Metal:
-            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Metal backend only available on Apple Silicon"});
-            
+            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Metal backend not yet implemented; use MLX"});
+
         default:
             return std::unexpected(Error{ErrorCode::UnknownError, "Unknown backend type"});
     }
@@ -58,24 +36,13 @@ Result<std::unique_ptr<ComputeBackend>> BackendFactory::create(BackendType type)
 
 std::vector<BackendType> BackendFactory::available_backends() {
     std::vector<BackendType> backends;
-    
-    // Check MLX availability (Apple Silicon with MLX enabled)
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
     backends.push_back(BackendType::MLX);
 #endif
-
-    // Check NEON availability at compile time
-#ifdef __ARM_NEON
-    backends.push_back(BackendType::SimdNeon);
-#endif
-    
-    // TODO: Add x86 SIMD backends (SSE2, AVX2, AVX-512) for Windows/Linux
-    
     return backends;
 }
 
 BackendType BackendFactory::best_available_backend() {
-    // For now, just return the first available
     auto available = available_backends();
     return available.empty() ? BackendType::Auto : available[0];
 }
@@ -88,29 +55,21 @@ BackendManager& BackendManager::instance() {
 
 Result<void> BackendManager::initialize() {
     if (initialized_) {
-        return {}; // Already initialized
+        return {};
     }
-    
-    // Create available backends
     create_available_backends();
-    
-    // Set default backend
     if (!backends_.empty()) {
         default_backend_ = backends_[0].get();
     }
-    
     initialized_ = true;
     return {};
 }
 
 void BackendManager::cleanup() {
     if (!initialized_) return;
-    
-    // Clean up all backends
     for (auto& backend : backends_) {
         backend->cleanup();
     }
-    
     backends_.clear();
     default_backend_ = nullptr;
     initialized_ = false;
@@ -121,14 +80,11 @@ ComputeBackend* BackendManager::get_backend(BackendType type) {
         auto init_result = initialize();
         if (!init_result) return nullptr;
     }
-    
-    // Find backend of requested type
     for (auto& backend : backends_) {
         if (backend->type() == type) {
             return backend.get();
         }
     }
-    
     return nullptr;
 }
 
@@ -137,15 +93,11 @@ ComputeBackend* BackendManager::get_default_backend() {
         auto init_result = initialize();
         if (!init_result) return nullptr;
     }
-    
     return default_backend_;
 }
 
 void BackendManager::create_available_backends() {
-    // Create all available backends
-    auto available_types = BackendFactory::available_backends();
-    
-    for (auto type : available_types) {
+    for (auto type : BackendFactory::available_backends()) {
         auto backend_result = BackendFactory::create(type);
         if (backend_result) {
             auto& backend = *backend_result;

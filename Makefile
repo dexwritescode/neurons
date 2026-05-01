@@ -130,15 +130,5 @@ help: ## Show available targets and their descriptions
 	@echo "Usage: make [target] [BUILD_TYPE=Debug|Release] [BUILD_DIR=path] [JOBS=N]"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[1;32m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@echo ""
-	@echo "Examples:"
-	@echo "  make                   Build all C++ in Release mode"
-	@echo "  make gui               Build dylib + Flutter macOS app"
-	@echo "  make run               Build dylib + launch Flutter (debug)"
-	@echo "  make tests             Build + run all C++ tests"
-	@echo "  make debug             Build all C++ in Debug mode"
-	@echo "  make clean && make     Clean rebuild"
-	@echo "  make dylib             Rebuild FFI dylib only (Flutter hot-reload cycle)"
-	@echo "  make proto             Regenerate Dart stubs after editing neurons.proto"
 
 .DEFAULT_GOAL := help

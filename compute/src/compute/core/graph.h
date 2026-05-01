@@ -207,7 +207,7 @@ inline ComputeGraphBuilder graph(BackendType backend = BackendType::Auto) {
 }
 
 inline ComputeGraphBuilder simd_graph() {
-    return ComputeGraphBuilder(BackendType::SimdNeon);
+    return ComputeGraphBuilder(BackendType::MLX);
 }
 
 inline ComputeGraphBuilder metal_graph() {

@@ -2,6 +2,7 @@
 
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
+#include "compute/model/chat_template.h"
 #include "models/registry/model_registry.h"
 
 #include <grpcpp/grpcpp.h>
@@ -139,9 +140,9 @@ grpc::Status NeuronsServiceImpl::GetStatus(grpc::ServerContext* /*ctx*/,
                 backend_name = "mlx";
                 gpu_name     = "Apple Silicon";
                 break;
-            case compute::BackendType::SimdNeon:
-                backend_name = "neon";
-                gpu_name     = "ARM NEON";
+            case compute::BackendType::Metal:
+                backend_name = "metal";
+                gpu_name     = "Apple GPU";
                 break;
             default: break;
         }
@@ -232,218 +233,61 @@ static int trim_blocks_to_budget(const compute::SimpleBpeTokenizer& tok,
 std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
                                               const neurons::GenerateRequest& req,
                                               int token_budget) const {
-    const std::string& type = mdl.model_type();
-    const auto& tok = mdl.tokenizer();
-    const int max_chars = 6000;  // char-based fallback when token_budget == 0
+    const std::string& type  = mdl.model_type();
+    const auto&        tok   = mdl.tokenizer();
+    const bool is_llama3     = (type == "llama") &&
+        (tok.find_token_id("<|start_header_id|>") != -1);
+    const std::string system = "You are a helpful assistant.";
+    const int max_chars      = 6000;
 
-    if (type == "llama" && mdl.tokenizer().find_token_id("<|start_header_id|>") != -1) {
-        // Llama-3 chat template (identified by presence of header tokens in vocab):
-        //   <|begin_of_text|>  — BOS is in the template; add_bos_token is null/false
-        //   <|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>
-        //   <|start_header_id|>user<|end_header_id|>\n\n{user}<|eot_id|>
-        //   <|start_header_id|>assistant<|end_header_id|>\n\n
-        const std::string hdr_open  = "<|start_header_id|>";
-        const std::string hdr_close = "<|end_header_id|>\n\n";
-        const std::string eot       = "<|eot_id|>";
-
-        const std::string sys_block =
-            "<|begin_of_text|>" +
-            hdr_open + "system" + hdr_close +
-            "You are a helpful assistant." + eot + "\n";
-        const std::string latest_block =
-            hdr_open + "user" + hdr_close + req.prompt() + eot + "\n" +
-            hdr_open + "assistant" + hdr_close;
-        const int overhead = static_cast<int>(sys_block.size() + latest_block.size());
-
-        std::vector<std::string> blocks;
-        const int history_count = req.history_size();
-        for (int i = 0; i + 1 < history_count; i += 2) {
-            const auto& u = req.history(i);
-            const auto& a = req.history(i + 1);
-            if (u.role() == "user" && a.role() == "assistant") {
-                blocks.push_back(
-                    hdr_open + "user" + hdr_close + u.content() + eot + "\n" +
-                    hdr_open + "assistant" + hdr_close + a.content() + eot + "\n");
-            }
-        }
-
-        int start;
-        if (token_budget > 0) {
-            const int fixed_tokens = count_tokens(tok, sys_block + latest_block);
-            start = trim_blocks_to_budget(tok, blocks, token_budget - fixed_tokens);
-        } else {
-            int budget = max_chars - overhead;
-            start = static_cast<int>(blocks.size());
-            for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-                if (budget >= static_cast<int>(blocks[i].size())) {
-                    budget -= static_cast<int>(blocks[i].size());
-                    start = i;
-                } else break;
-            }
-        }
-
-        std::string result = sys_block;
-        for (int i = start; i < static_cast<int>(blocks.size()); ++i) result += blocks[i];
-        result += latest_block;
-        return result;
-    }
-
-    if (type == "qwen2" || type == "qwen3") {
-        // Qwen2/Qwen3 ChatML template:
-        //   <|im_start|>system\n{system}<|im_end|>\n
-        //   <|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant}<|im_end|>\n
-        //   <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
-        const std::string im_start = "<|im_start|>";
-        const std::string im_end   = "<|im_end|>";
-
-        const std::string sys_block =
-            im_start + "system\n" + "You are a helpful assistant." + im_end + "\n";
-        const std::string latest_block =
-            im_start + "user\n" + req.prompt() + im_end + "\n" +
-            im_start + "assistant\n";
-        const int overhead = static_cast<int>(sys_block.size() + latest_block.size());
-
-        std::vector<std::string> blocks;
-        const int history_count = req.history_size();
-        for (int i = 0; i + 1 < history_count; i += 2) {
-            const auto& u = req.history(i);
-            const auto& a = req.history(i + 1);
-            if (u.role() == "user" && a.role() == "assistant") {
-                blocks.push_back(
-                    im_start + "user\n" + u.content() + im_end + "\n" +
-                    im_start + "assistant\n" + a.content() + im_end + "\n");
-            }
-        }
-
-        int start;
-        if (token_budget > 0) {
-            const int fixed_tokens = count_tokens(tok, sys_block + latest_block);
-            start = trim_blocks_to_budget(tok, blocks, token_budget - fixed_tokens);
-        } else {
-            int budget = max_chars - overhead;
-            start = static_cast<int>(blocks.size());
-            for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-                if (budget >= static_cast<int>(blocks[i].size())) {
-                    budget -= static_cast<int>(blocks[i].size());
-                    start = i;
-                } else break;
-            }
-        }
-
-        std::string result = sys_block;
-        for (int i = start; i < static_cast<int>(blocks.size()); ++i) result += blocks[i];
-        result += latest_block;
-        return result;
-    }
-
-    if (type == "gemma" || type == "gemma2" || type == "gemma3_text") {
-        // Gemma chat template: <start_of_turn>user\n{msg}<end_of_turn>\n<start_of_turn>model\n
-        // BOS is prepended by tokenizer. No system prompt in Gemma's standard template.
-        std::vector<std::string> blocks;
-        const int history_count = req.history_size();
-        for (int i = 0; i + 1 < history_count; i += 2) {
-            const auto& u = req.history(i);
-            const auto& a = req.history(i + 1);
-            if (u.role() == "user" && a.role() == "assistant") {
-                blocks.push_back(
-                    "<start_of_turn>user\n" + u.content() + "<end_of_turn>\n" +
-                    "<start_of_turn>model\n" + a.content() + "<end_of_turn>\n");
-            }
-        }
-        const std::string latest = "<start_of_turn>user\n" + req.prompt() +
-                                   "<end_of_turn>\n<start_of_turn>model\n";
-
-        int start;
-        if (token_budget > 0) {
-            const int fixed_tokens = count_tokens(tok, latest);
-            start = trim_blocks_to_budget(tok, blocks, token_budget - fixed_tokens);
-        } else {
-            int budget = max_chars - static_cast<int>(latest.size());
-            start = static_cast<int>(blocks.size());
-            for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-                if (budget >= static_cast<int>(blocks[i].size())) {
-                    budget -= static_cast<int>(blocks[i].size());
-                    start = i;
-                } else break;
-            }
-        }
-
-        std::string result;
-        for (int i = start; i < static_cast<int>(blocks.size()); ++i) result += blocks[i];
-        result += latest;
-        return result;
-    }
-
-    if (type == "mistral") {
-        // Mistral v0.3: <s>[INST] {user} [/INST]{assistant}</s>[INST] {user} [/INST]
-        // BOS prepended by tokenizer (add_special_tokens=true), not included here.
-        std::vector<std::string> blocks;
-        const int history_count = req.history_size();
-        for (int i = 0; i + 1 < history_count; i += 2) {
-            const auto& u = req.history(i);
-            const auto& a = req.history(i + 1);
-            if (u.role() == "user" && a.role() == "assistant") {
-                blocks.push_back("[INST] " + u.content() + " [/INST]" + a.content() + "</s>");
-            }
-        }
-        const std::string latest = "[INST] " + req.prompt() + " [/INST]";
-
-        int start;
-        if (token_budget > 0) {
-            const int fixed_tokens = count_tokens(tok, latest);
-            start = trim_blocks_to_budget(tok, blocks, token_budget - fixed_tokens);
-        } else {
-            int budget = max_chars - static_cast<int>(latest.size());
-            start = static_cast<int>(blocks.size());
-            for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-                if (budget >= static_cast<int>(blocks[i].size())) {
-                    budget -= static_cast<int>(blocks[i].size());
-                    start = i;
-                } else break;
-            }
-        }
-
-        std::string result;
-        for (int i = start; i < static_cast<int>(blocks.size()); ++i) result += blocks[i];
-        result += latest;
-        return result;
-    }
-
-    // Default: TinyLlama / Llama-2 chat template
-    const std::string system_block = "<|system|>\nYou are a helpful assistant.</s>\n";
-    const std::string latest_block = "<|user|>\n" + req.prompt() + "</s>\n<|assistant|>\n";
-    const int overhead = static_cast<int>(system_block.size() + latest_block.size());
-
-    std::vector<std::string> blocks;
+    // Collect history as user/assistant pairs.
+    struct Pair { std::string user; std::string assistant; };
+    std::vector<Pair> pairs;
     const int history_count = req.history_size();
     for (int i = 0; i + 1 < history_count; i += 2) {
         const auto& u = req.history(i);
         const auto& a = req.history(i + 1);
-        if (u.role() == "user" && a.role() == "assistant") {
-            blocks.push_back("<|user|>\n" + u.content() + "</s>\n" +
-                             "<|assistant|>\n" + a.content() + "</s>\n");
-        }
+        if (u.role() == "user" && a.role() == "assistant")
+            pairs.push_back({u.content(), a.content()});
     }
+
+    // Format each pair for token-budget trimming.
+    // Using apply_chat_template with no system gives the incremental cost per pair.
+    std::vector<std::string> pair_strings;
+    pair_strings.reserve(pairs.size());
+    for (const auto& p : pairs) {
+        pair_strings.push_back(compute::apply_chat_template(
+            type, is_llama3, "",
+            {{"user", p.user}, {"assistant", p.assistant}}));
+    }
+
+    // Fixed cost: system block + current user turn.
+    const std::string fixed = compute::apply_chat_template(
+        type, is_llama3, system, {{"user", req.prompt()}});
 
     int start;
     if (token_budget > 0) {
-        const int fixed_tokens = count_tokens(tok, system_block + latest_block);
-        start = trim_blocks_to_budget(tok, blocks, token_budget - fixed_tokens);
+        start = trim_blocks_to_budget(tok, pair_strings,
+                                      token_budget - count_tokens(tok, fixed));
     } else {
-        int budget = max_chars - overhead;
-        start = static_cast<int>(blocks.size());
-        for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-            if (budget >= static_cast<int>(blocks[i].size())) {
-                budget -= static_cast<int>(blocks[i].size());
+        int budget = max_chars - static_cast<int>(fixed.size());
+        start = static_cast<int>(pairs.size());
+        for (int i = static_cast<int>(pairs.size()) - 1; i >= 0; --i) {
+            if (budget >= static_cast<int>(pair_strings[i].size())) {
+                budget -= static_cast<int>(pair_strings[i].size());
                 start = i;
             } else break;
         }
     }
 
-    std::string result = system_block;
-    for (int i = start; i < static_cast<int>(blocks.size()); ++i) result += blocks[i];
-    result += latest_block;
-    return result;
+    // Assemble final message list and render.
+    std::vector<compute::ChatMessage> messages;
+    for (int i = start; i < static_cast<int>(pairs.size()); ++i) {
+        messages.push_back({"user",      pairs[i].user});
+        messages.push_back({"assistant", pairs[i].assistant});
+    }
+    messages.push_back({"user", req.prompt()});
+    return compute::apply_chat_template(type, is_llama3, system, messages);
 }
 
 grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,

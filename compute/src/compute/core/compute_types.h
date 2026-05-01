@@ -34,9 +34,8 @@ using Result = std::expected<T, Error>;
 
 // Backend types
 enum class BackendType {
-    SimdNeon,
     Metal,
-    MLX,    // Apple MLX framework (3x faster than Metal on Apple Silicon)
+    MLX,    // Apple MLX framework (Metal-accelerated on Apple Silicon)
     Auto    // Let system choose best available
 };
 

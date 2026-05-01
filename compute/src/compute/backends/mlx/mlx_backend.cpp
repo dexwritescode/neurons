@@ -1,5 +1,6 @@
 #include "mlx_backend.h"
 #include "../../model/model_loader.h"
+#include <numeric>
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
@@ -111,23 +112,21 @@ Tensor MLXBackend::matrix_scalar_add(const Tensor& input, float scalar) {
 
 // Core operations with proper error handling
 Result<Tensor> MLXBackend::matmul(const Tensor& a, const Tensor& b) {
-    // Validate input tensors are 2D matrices
-    if (a.shape().size() != 2 || b.shape().size() != 2) {
-        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: only 2D matrices supported"});
+    if (a.shape().size() < 2 || b.shape().size() < 2) {
+        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: inputs must be at least 2D"});
     }
 
-    // Check dimension compatibility: (m, k) x (k, n) -> (m, n)
-    if (a.shape()[1] != b.shape()[0]) {
-        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: incompatible matrix dimensions"});
+    // Check inner dimension compatibility (last of a vs second-to-last of b)
+    const auto& sa = a.shape();
+    const auto& sb = b.shape();
+    if (sa[sa.size() - 1] != sb[sb.size() - 2]) {
+        return std::unexpected(Error{ErrorCode::InvalidInput, "MLX matmul: incompatible inner dimensions"});
     }
 
     try {
         mx::array result = mx::matmul(a.to_mlx(), b.to_mlx());
-
-        // Get result shape from MLX array
         auto mlx_shape = result.shape();
         std::vector<size_t> result_shape(mlx_shape.begin(), mlx_shape.end());
-
         auto result_buffer = std::make_shared<MLXBuffer>(result);
         return Tensor(result_buffer, result_shape);
     } catch (const std::exception& e) {
@@ -277,6 +276,62 @@ Result<Tensor> MLXBackend::gelu(const Tensor& input) {
         auto inner     = mlx_input + k * x3;
         auto tanh_part = mx::tanh(c * inner);
         return 0.5f * mlx_input * (1.0f + tanh_part);
+    });
+}
+
+Result<Tensor> MLXBackend::sigmoid(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        auto mlx_input = mlx_utils::to_mlx_auto(input);
+        return mx::sigmoid(mlx_input);
+    });
+}
+
+Result<Tensor> MLXBackend::softplus(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        auto x = mlx_utils::to_mlx_auto(input);
+        return mx::log(mx::ones_like(x) + mx::exp(x));
+    });
+}
+
+Result<Tensor> MLXBackend::exp(const Tensor& input) {
+    VALIDATE_MLX_TENSOR(input);
+    return mlx_utils::mlx_tensor_op(input.shape(), [&]() {
+        return mx::exp(mlx_utils::to_mlx_auto(input));
+    });
+}
+
+Result<Tensor> MLXBackend::subtract(const Tensor& a, const Tensor& b) {
+    VALIDATE_MLX_TENSOR(a, b);
+    return mlx_utils::mlx_tensor_op(mlx_utils::broadcast_shape(a.shape(), b.shape()), [&]() {
+        return mlx_utils::to_mlx_auto(a) - mlx_utils::to_mlx_auto(b);
+    });
+}
+
+Result<Tensor> MLXBackend::conv1d(
+    const Tensor& input, const Tensor& weight,
+    int stride, int padding, int groups)
+{
+    VALIDATE_MLX_TENSOR(input);
+    VALIDATE_MLX_TENSOR(weight);
+
+    auto mlx_input  = mlx_utils::to_mlx_auto(input);
+    auto mlx_weight = mlx_utils::to_mlx_auto(weight);
+
+    // mx::conv1d expects [N, L, C_in]; add batch dim if missing.
+    bool added_batch = false;
+    if (mlx_input.ndim() == 2) {
+        mlx_input  = mx::expand_dims(mlx_input, 0);
+        added_batch = true;
+    }
+
+    auto out_shape = input.shape();  // placeholder — recomputed after call
+    return mlx_utils::mlx_tensor_op(out_shape, [&]() {
+        auto out = mx::conv1d(mlx_input, mlx_weight, stride, padding, /*dilation=*/1, groups);
+        if (added_batch) out = mx::squeeze(out, 0);
+        return out;
     });
 }
 
@@ -559,6 +614,55 @@ Result<Tensor> MLXBackend::triu(const Tensor& input, int k) {
     } catch (const std::exception& e) {
         return std::unexpected(Error{ErrorCode::ComputeError,
                                    std::string("MLX triu failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::take(const Tensor& input, const std::vector<int>& indices, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    try {
+        mx::array idx = mx::array(indices.data(), {static_cast<int>(indices.size())}, mx::int32);
+        mx::array result = mx::take(mlx_utils::to_mlx_auto(input), idx, axis);
+        auto mlx_shape = result.shape();
+        std::vector<size_t> result_shape(mlx_shape.begin(), mlx_shape.end());
+        return Tensor(std::make_shared<MLXBuffer>(result), result_shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX take failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::take(const Tensor& input, const Tensor& indices, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    VALIDATE_MLX_TENSOR(indices);
+    try {
+        mx::array result = mx::take(mlx_utils::to_mlx_auto(input),
+                                    mlx_utils::to_mlx_auto(indices), axis);
+        auto sh = result.shape();
+        std::vector<size_t> shape(sh.begin(), sh.end());
+        return Tensor(std::make_shared<MLXBuffer>(result), shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX take (tensor idx) failed: ") + e.what()});
+    }
+}
+
+Result<Tensor> MLXBackend::topk_indices(const Tensor& input, int k, int axis) {
+    VALIDATE_MLX_TENSOR(input);
+    try {
+        auto x = mlx_utils::to_mlx_auto(input);
+        // argsort of negated values → indices in descending order
+        auto sorted_idx = mx::argsort(mx::negative(x), axis);
+        // Select first k indices along the axis using a range index array
+        std::vector<int> range(k);
+        std::iota(range.begin(), range.end(), 0);
+        mx::array range_arr(range.data(), {k}, mx::int32);
+        auto topk_idx = mx::take(sorted_idx, range_arr, axis);
+        auto sh = topk_idx.shape();
+        std::vector<size_t> shape(sh.begin(), sh.end());
+        return Tensor(std::make_shared<MLXBuffer>(topk_idx), shape);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+                                     std::string("MLX topk_indices failed: ") + e.what()});
     }
 }
 

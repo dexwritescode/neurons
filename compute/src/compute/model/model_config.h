@@ -65,6 +65,22 @@ struct ModelConfig {
     std::optional<int>    sliding_window_pattern; // Global attn period (Gemma3: 6)
     std::optional<float>  rope_local_base_freq;   // RoPE theta for local layers (Gemma3: 10000)
 
+    // Qwen3.5 MoE optional fields (qwen3_5_moe model_type only)
+    std::optional<std::vector<std::string>> layer_types;         // per-layer: "linear_attention" | "full_attention"
+    std::optional<size_t> num_experts;                           // total experts (256)
+    std::optional<size_t> num_experts_per_tok;                   // active experts per token (8)
+    std::optional<size_t> moe_intermediate_size;                 // per-expert FFN hidden dim (512)
+    std::optional<size_t> shared_expert_intermediate_size;       // shared expert FFN hidden dim (512)
+    std::optional<size_t> linear_conv_kernel_dim;                // SSM short-conv kernel size (4)
+    std::optional<size_t> linear_key_head_dim;                   // SSM key head dim (128)
+    std::optional<size_t> linear_num_key_heads;                  // SSM key heads (16)
+    std::optional<size_t> linear_num_value_heads;                // SSM value heads (32)
+    std::optional<size_t> linear_value_head_dim;                 // SSM value head dim (128)
+    std::optional<bool>   attn_output_gate;                      // multiplicative gate on attn output
+    std::optional<float>  partial_rotary_factor;                 // fraction of head dims for RoPE (0.25)
+    std::optional<bool>   mrope_interleaved;                     // interleaved mRoPE mode
+    std::optional<std::vector<int>> mrope_section;               // mRoPE section sizes [11,11,10]
+
     // Model path info - may be optional
     std::optional<std::string> name_or_path;
     std::optional<std::string> transformers_version;
@@ -106,6 +122,9 @@ struct ModelConfig {
 
     /** True for Gemma/Gemma2/Gemma3 models */
     bool is_gemma_architecture() const;
+
+    /** True for Qwen3.5 MoE (qwen3_5_moe) models */
+    bool is_qwen3_moe_architecture() const;
 
     // Computed helpers
 

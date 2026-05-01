@@ -6,6 +6,7 @@
 #include "cli/utils/format_utils.h"
 
 #include "compute/core/compute_backend.h"
+#include "compute/model/chat_template.h"
 #include "compute/model/language_model.h"
 #include "compute/core/compute_types.h"
 
@@ -55,58 +56,13 @@ std::string ChatCommand::buildPrompt(const std::string& model_type,
                                      const std::vector<Turn>& history,
                                      const std::string& user_input,
                                      bool has_llama3_tokens) const {
-    const bool is_llama3 = (model_type == "llama") && has_llama3_tokens;
-
-    if (is_llama3) {
-        std::string out = "<|begin_of_text|>";
-        out += "<|start_header_id|>system<|end_header_id|>\n\n" + system_prompt_ + "<|eot_id|>\n";
-        for (const auto& t : history) {
-            out += "<|start_header_id|>" + t.role + "<|end_header_id|>\n\n" + t.content + "<|eot_id|>\n";
-        }
-        out += "<|start_header_id|>user<|end_header_id|>\n\n" + user_input + "<|eot_id|>\n";
-        out += "<|start_header_id|>assistant<|end_header_id|>\n\n";
-        return out;
-    }
-
-    if (model_type == "qwen2" || model_type == "qwen3") {
-        std::string out = "<|im_start|>system\n" + system_prompt_ + "<|im_end|>\n";
-        for (const auto& t : history) {
-            out += "<|im_start|>" + t.role + "\n" + t.content + "<|im_end|>\n";
-        }
-        out += "<|im_start|>user\n" + user_input + "<|im_end|>\n";
-        out += "<|im_start|>assistant\n";
-        return out;
-    }
-
-    if (model_type == "mistral") {
-        // Mistral uses [INST]/[/INST] without system prompt support
-        std::string out;
-        for (const auto& t : history) {
-            if (t.role == "user")      out += "[INST] " + t.content + " [/INST]";
-            else if (t.role == "assistant") out += t.content + "</s>";
-        }
-        out += "[INST] " + user_input + " [/INST]";
-        return out;
-    }
-
-    if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text") {
-        std::string out;
-        for (const auto& t : history) {
-            out += "<start_of_turn>" + t.role + "\n" + t.content + "<end_of_turn>\n";
-        }
-        out += "<start_of_turn>user\n" + user_input + "<end_of_turn>\n";
-        out += "<start_of_turn>model\n";
-        return out;
-    }
-
-    // TinyLlama / Llama-2 template
-    std::string out = "<|system|>\n" + system_prompt_ + "</s>\n";
-    for (const auto& t : history) {
-        if (t.role == "user")      out += "<|user|>\n" + t.content + "</s>\n<|assistant|>\n";
-        else if (t.role == "assistant") out += t.content + "</s>\n";
-    }
-    out += "<|user|>\n" + user_input + "</s>\n<|assistant|>\n";
-    return out;
+    std::vector<compute::ChatMessage> messages;
+    messages.reserve(history.size() + 1);
+    for (const auto& t : history)
+        messages.push_back({t.role, t.content});
+    messages.push_back({"user", user_input});
+    return compute::apply_chat_template(
+        model_type, has_llama3_tokens, system_prompt_, messages);
 }
 
 void ChatCommand::printHelp() const {
