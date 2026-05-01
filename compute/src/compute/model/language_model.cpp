@@ -6,6 +6,10 @@
 #include "sampler.h"
 #include <unordered_set>
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+#include "qwen3_moe_model_mlx.h"
+#endif
+
 namespace compute {
 
 // ── Default generate() ───────────────────────────────────────────────────────
@@ -81,9 +85,15 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
     }
 
     if (model_type == "qwen3_5_moe") {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+        auto result = Qwen3MoeModelMLX::from_model_dir(model_dir);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<Qwen3MoeModelMLX>(std::move(*result));
+#else
         auto result = Qwen3MoeModel::from_model_dir(model_dir, backend);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<Qwen3MoeModel>(std::move(*result));
+#endif
     }
 
     return std::unexpected(Error{ErrorCode::InvalidModel,

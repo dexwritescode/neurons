@@ -131,4 +131,37 @@ ModelLoader::load_all_safetensors(const std::vector<std::filesystem::path>& safe
 #endif
 }
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+
+Result<std::pair<ModelConfig, std::unordered_map<std::string, mx::array>>>
+ModelLoader::load_model_mlx(const std::filesystem::path& model_dir) {
+    if (!std::filesystem::exists(model_dir) || !std::filesystem::is_directory(model_dir))
+        return std::unexpected(Error{ErrorCode::InvalidInput,
+            "Model directory not found: " + model_dir.string()});
+
+    auto config_result = load_config(model_dir);
+    if (!config_result) return std::unexpected(config_result.error());
+
+    auto files = find_safetensors_files(model_dir);
+    if (files.empty())
+        return std::unexpected(Error{ErrorCode::InvalidInput,
+            "No .safetensors files found in: " + model_dir.string()});
+
+    std::unordered_map<std::string, mx::array> all_weights;
+    try {
+        for (const auto& file : files) {
+            auto [tensor_map, _] = mx::load_safetensors(file.string());
+            for (auto& [name, arr] : tensor_map)
+                all_weights.emplace(std::move(name), std::move(arr));
+        }
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{ErrorCode::ComputeError,
+            "Failed to load safetensors: " + std::string(e.what())});
+    }
+
+    return std::make_pair(std::move(*config_result), std::move(all_weights));
+}
+
+#endif // MLX_BACKEND_ENABLED
+
 } // namespace compute

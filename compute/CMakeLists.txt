@@ -26,6 +26,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         message(STATUS "MLX v${MLX_VERSION} fetched successfully - enabling MLX backend")
         list(APPEND BACKEND_SOURCES
             src/compute/backends/mlx/mlx_backend.cpp
+            src/compute/model/qwen3_moe_model_mlx.cpp
         )
         set(MLX_AVAILABLE TRUE)
 

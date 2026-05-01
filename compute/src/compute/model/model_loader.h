@@ -8,6 +8,10 @@
 #include <filesystem>
 #include <vector>
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+#include <mlx/mlx.h>
+#endif
+
 namespace compute {
 
 // Forward declaration
@@ -35,6 +39,15 @@ public:
      * @return Result containing parsed model config or error
      */
     static Result<ModelConfig> load_config(const std::filesystem::path& model_dir);
+
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+    /**
+     * Load model weights as native MLX arrays — no ComputeBackend required.
+     * Eliminates the Tensor wrapper overhead for MLX-native model classes.
+     */
+    static Result<std::pair<ModelConfig, std::unordered_map<std::string, mlx::core::array>>>
+    load_model_mlx(const std::filesystem::path& model_dir);
+#endif
 
 private:
     /**
