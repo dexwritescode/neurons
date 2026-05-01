@@ -51,10 +51,10 @@ TEST_F(Qwen3MoeIntegrationTest, ConfigLoadsCorrectly) {
 }
 
 TEST_F(Qwen3MoeIntegrationTest, GenerateCapitalOfFrance) {
-    // Qwen3 ChatML template (no system prompt, thinking disabled via /no_think)
+    // Qwen3 ChatML template (reasoning model — Paris should appear in <think> block)
     const std::string prompt =
         "<|im_start|>user\n"
-        "What is the capital of France? /no_think<|im_end|>\n"
+        "What is the capital of France?<|im_end|>\n"
         "<|im_start|>assistant\n";
 
     auto token_ids = model->tokenizer().encode(prompt, /*add_special_tokens=*/false);
@@ -69,7 +69,7 @@ TEST_F(Qwen3MoeIntegrationTest, GenerateCapitalOfFrance) {
     std::string decoded;
     const int eos_id = model->tokenizer().eos_token_id();
 
-    auto result = model->generate(token_ids, /*max_new_tokens=*/64, greedy,
+    auto result = model->generate(token_ids, /*max_new_tokens=*/128, greedy,
         [&](int tok) {
             if (tok == eos_id) return false;
             gen_so_far.push_back(tok);

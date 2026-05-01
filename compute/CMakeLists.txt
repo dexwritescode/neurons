@@ -84,7 +84,7 @@ if(BUILD_TESTING)
         CACHE STRING "Path to Mistral-7B model for integration tests")
     set(QWEN2_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen2.5-3B-Instruct-4bit"
         CACHE STRING "Path to Qwen2.5 model for integration tests")
-    set(QWEN3MOE_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen3-30B-A3B-4bit"
+    set(QWEN3MOE_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen3.6-35B-A3B-4bit"
         CACHE STRING "Path to Qwen3 MoE model for integration tests")
 
     configure_file(
