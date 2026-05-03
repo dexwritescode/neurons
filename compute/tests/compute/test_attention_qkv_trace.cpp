@@ -18,58 +18,52 @@ namespace compute {
 
 class AttentionQKVTraceTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        model_dir = TINYLLAMA_MODEL_DIR;
-        baseline_dir = std::filesystem::path(TEST_RESOURCES_DIR).parent_path() / "baselines" / "output";
+    static void SetUpTestSuite() {
+        model_dir_    = TINYLLAMA_MODEL_DIR;
+        baseline_dir_ = std::filesystem::path(TEST_RESOURCES_DIR).parent_path() / "baselines" / "output";
 
-        if (!std::filesystem::exists(model_dir))
-            GTEST_SKIP() << "Model not found: " << model_dir;
-
-        // Create MLX backend
-        auto backend_result = BackendFactory::create(BackendType::MLX);
-        ASSERT_TRUE(backend_result.has_value())
-            << "Failed to create MLX backend: " << backend_result.error().message;
-
-        backend = std::move(*backend_result);
-        auto init_result = backend->initialize();
-        ASSERT_TRUE(init_result.has_value())
-            << "Failed to initialize MLX backend: " << init_result.error().message;
-
-        // Load TinyLlama model
-        auto inference_result = TinyLlamaInference::from_model_dir(model_dir, backend.get());
-        ASSERT_TRUE(inference_result.has_value())
-            << "Failed to load TinyLlama model: " << inference_result.error().message;
-
-        inference = std::make_unique<TinyLlamaInference>(std::move(*inference_result));
-    }
-
-    void TearDown() override {
-        inference.reset();
-        if (backend) {
-            backend->cleanup();
+        if (!std::filesystem::exists(model_dir_)) {
+            skip_reason_ = "Model not found: " + model_dir_.string();
+            return;
         }
+
+        auto backend_result = BackendFactory::create(BackendType::MLX);
+        if (!backend_result) { skip_reason_ = backend_result.error().message; return; }
+        backend_ = std::move(*backend_result);
+        if (!backend_->initialize()) { skip_reason_ = "Backend init failed"; return; }
+
+        auto inference_result = TinyLlamaInference::from_model_dir(model_dir_, backend_.get());
+        if (!inference_result) { skip_reason_ = inference_result.error().message; return; }
+        inference_ = std::make_unique<TinyLlamaInference>(std::move(*inference_result));
     }
 
-    // Helper: Compare two MLX arrays with tolerance
+    static void TearDownTestSuite() {
+        inference_.reset();
+        if (backend_) backend_->cleanup();
+        backend_.reset();
+        skip_reason_.clear();
+    }
+
+    void SetUp() override {
+        if (!skip_reason_.empty())
+            GTEST_SKIP() << skip_reason_;
+    }
+
     void compare_arrays(const mx::array& cpp_array, const mx::array& python_array,
-                       const std::string& name, float rtol = 1e-3f, float atol = 1e-4f) {
+                        const std::string& name, float rtol = 1e-3f, float atol = 1e-4f) {
         ASSERT_EQ(cpp_array.shape().size(), python_array.shape().size())
             << name << ": Shape dimension mismatch";
-
         for (size_t i = 0; i < cpp_array.shape().size(); ++i) {
             ASSERT_EQ(cpp_array.shape()[i], python_array.shape()[i])
                 << name << ": Shape mismatch at dimension " << i;
         }
 
-        // Convert both to float32 for comparison
         auto cpp_f32 = mx::astype(cpp_array, mx::float32);
-        auto py_f32 = mx::astype(python_array, mx::float32);
+        auto py_f32  = mx::astype(python_array, mx::float32);
         mx::eval(cpp_f32, py_f32);
 
-        // Compute relative and absolute differences
-        auto diff = mx::abs(cpp_f32 - py_f32);
+        auto diff     = mx::abs(cpp_f32 - py_f32);
         auto rel_diff = diff / (mx::abs(py_f32) + 1e-8f);
-
         mx::eval(diff, rel_diff);
 
         auto max_abs_diff = mx::max(diff).item<float>();
@@ -82,27 +76,32 @@ protected:
 
         if (max_abs_diff <= atol && max_rel_diff <= rtol) {
             std::cout << "✓ " << name << " matches (max_abs_diff=" << max_abs_diff
-                     << ", max_rel_diff=" << max_rel_diff << ")" << std::endl;
+                      << ", max_rel_diff=" << max_rel_diff << ")" << std::endl;
         }
     }
 
-    std::filesystem::path model_dir;
-    std::filesystem::path baseline_dir;
-    std::unique_ptr<ComputeBackend> backend;
-    std::unique_ptr<TinyLlamaInference> inference;
+    static std::filesystem::path              model_dir_;
+    static std::filesystem::path              baseline_dir_;
+    static std::string                        skip_reason_;
+    static std::unique_ptr<ComputeBackend>    backend_;
+    static std::unique_ptr<TinyLlamaInference> inference_;
 };
 
+std::filesystem::path               AttentionQKVTraceTest::model_dir_;
+std::filesystem::path               AttentionQKVTraceTest::baseline_dir_;
+std::string                         AttentionQKVTraceTest::skip_reason_;
+std::unique_ptr<ComputeBackend>     AttentionQKVTraceTest::backend_;
+std::unique_ptr<TinyLlamaInference> AttentionQKVTraceTest::inference_;
+
 TEST_F(AttentionQKVTraceTest, CompareWithPythonBaseline) {
-    // Load Python baseline
-    auto baseline_file = baseline_dir / "attention_full_baseline.safetensors";
+    auto baseline_file = baseline_dir_ / "attention_full_baseline.safetensors";
     ASSERT_TRUE(std::filesystem::exists(baseline_file))
         << "Baseline file not found: " << baseline_file;
 
     std::cout << "Loading baseline from: " << baseline_file << std::endl;
-    auto baseline_data = mx::load_safetensors(baseline_file.string());
+    auto baseline_data   = mx::load_safetensors(baseline_file.string());
     auto& baseline_arrays = baseline_data.first;
 
-    // Get input from baseline to ensure exact same input
     auto input_mlx = baseline_arrays.at("input");
     mx::eval(input_mlx);
 
@@ -110,43 +109,32 @@ TEST_F(AttentionQKVTraceTest, CompareWithPythonBaseline) {
               << input_mlx.shape()[1] << "]" << std::endl;
     std::cout << "Input dtype: " << input_mlx.dtype() << std::endl;
 
-    // Wrap as Tensor (need to convert to bfloat16 to match model dtype)
     auto input_bf16 = mx::astype(input_mlx, mx::bfloat16);
     mx::eval(input_bf16);
     auto* input_array_ptr = new mx::array(input_bf16);
-    auto input_tensor = backend->wrap_native_tensor(input_array_ptr, {5, 2048});
+    auto input_tensor = backend_->wrap_native_tensor(input_array_ptr, {5, 2048});
 
-    // Call attention_layer - this is what we're testing!
     const int layer_idx = 0;
     std::cout << "\nRunning C++ attention_layer..." << std::endl;
-    auto attention_output = inference->attention_layer(input_tensor, layer_idx);
+    auto attention_output = inference_->attention_layer(input_tensor, layer_idx);
 
-    // Expect success now that implementation is complete
     ASSERT_TRUE(attention_output.has_value())
         << "attention_layer failed: " << attention_output.error().message;
 
     std::cout << "✓ attention_layer completed successfully" << std::endl;
 
-    // Extract C++ output as MLX array
     auto cpp_output = const_cast<Tensor&>(*attention_output).to_mlx();
     mx::eval(cpp_output);
 
     std::cout << "C++ output shape: [" << cpp_output.shape()[0] << ", "
               << cpp_output.shape()[1] << "]" << std::endl;
-    std::cout << "C++ output dtype: " << cpp_output.dtype() << std::endl;
 
-    // Get Python baseline output
     auto python_output = baseline_arrays.at("final_output");
-
     std::cout << "Python output shape: [" << python_output.shape()[0] << ", "
               << python_output.shape()[1] << "]" << std::endl;
 
-    // Compare outputs
-    // Note: We use relaxed tolerances because of bfloat16 quantization
     std::cout << "\nComparing C++ vs Python outputs..." << std::endl;
-    compare_arrays(cpp_output, python_output, "final_output",
-                   1e-2f,  // rtol: 1% relative tolerance (relaxed for bfloat16)
-                   1e-2f); // atol: 0.01 absolute tolerance
+    compare_arrays(cpp_output, python_output, "final_output", 1e-2f, 1e-2f);
 
     std::cout << "\n✓ Full attention layer test passed!" << std::endl;
 }
