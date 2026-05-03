@@ -33,6 +33,12 @@ public:
     Result<std::vector<float>> decode(int token_id) override;
     void reset_cache() override;
 
+    Result<std::vector<int>> generate(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens = 4096,
+        SamplingParams params = {},
+        std::function<bool(int)> on_token = nullptr) override;
+
     const ModelConfig&        config()         const override { return config_; }
     const std::string&        model_type()     const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
@@ -130,6 +136,11 @@ private:
     void mlx_build_decode_fn();
     Result<std::vector<float>> mlx_prefill_batch(const std::vector<int>& prompt_ids);
     Result<std::vector<float>> mlx_run_step(int token_id);
+    Result<std::vector<int>>   mlx_generate_pipelined(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens,
+        SamplingParams params,
+        std::function<bool(int)> on_token);
 #endif
 };
 

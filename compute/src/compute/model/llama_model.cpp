@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <unordered_set>
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include <mlx/mlx.h>
@@ -479,6 +480,27 @@ void LlamaModel::reset_cache() {
     mlx_state_.reset();
     mlx_pos_ = 0;
 #endif
+}
+
+// ── Pipelined generate() override ────────────────────────────────────────────
+//
+// On Apple Silicon with MLX, greedy decode is accelerated by passing the
+// unevaluated argmax from step N as input to step N+1 before waiting for step
+// N to complete.  This keeps the GPU busy between decode steps and eliminates
+// the CPU↔GPU round-trip idle time present in the base-class loop.
+// Non-greedy and non-MLX paths fall back to LanguageModel::generate().
+
+Result<std::vector<int>> LlamaModel::generate(
+    const std::vector<int>& input_ids,
+    size_t max_new_tokens,
+    SamplingParams params,
+    std::function<bool(int)> on_token)
+{
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+    if (params.temperature < 1e-6f)
+        return mlx_generate_pipelined(input_ids, max_new_tokens, params, on_token);
+#endif
+    return LanguageModel::generate(input_ids, max_new_tokens, params, on_token);
 }
 
 Result<std::vector<float>> LlamaModel::prefill(const std::vector<int>& prompt_ids) {
@@ -1164,6 +1186,107 @@ Result<std::vector<float>> LlamaModel::mlx_run_step(int token_id) {
     std::vector<float> result(config_.vocab_size);
     std::copy(logits.data<float>(), logits.data<float>() + config_.vocab_size, result.data());
     return result;
+}
+
+Result<std::vector<int>> LlamaModel::mlx_generate_pipelined(
+    const std::vector<int>& input_ids,
+    size_t max_new_tokens,
+    SamplingParams /*params*/,
+    std::function<bool(int)> on_token)
+{
+    // Build EOS set.
+    std::unordered_set<int> eos_set;
+    if (config_.eos_token_ids.has_value()) {
+        for (int id : *config_.eos_token_ids) eos_set.insert(id);
+    } else {
+        eos_set.insert(2);
+    }
+
+    // Prefill: initialises mlx_state_ and mlx_pos_.
+    auto prefill_result = prefill(input_ids);
+    if (!prefill_result) return std::unexpected(prefill_result.error());
+
+    std::vector<int> generated;
+    generated.reserve(max_new_tokens);
+
+    if (max_new_tokens == 0) return generated;
+
+    // First generated token — CPU argmax of prefill logits (greedy only path).
+    const auto& fl = *prefill_result;
+    int first_token = (int)(std::max_element(fl.begin(), fl.end()) - fl.begin());
+    generated.push_back(first_token);
+    if (on_token && !on_token(first_token)) return generated;
+    if (eos_set.count(first_token) || generated.size() >= max_new_tokens) return generated;
+
+    auto& st  = *mlx_state_;
+    const int n = (int)st.kv_keys.size();
+
+    // Helper: assemble inputs for the compiled decode function.
+    // Captures st and n by reference; reads st.kv_keys/kv_vals at call time.
+    auto build_inputs = [&](mx::array tok, int32_t pos) {
+        std::vector<mx::array> inputs;
+        inputs.reserve(2 + 2 * n);
+        inputs.push_back(std::move(tok));
+        inputs.push_back(mx::array(&pos, {1}, mx::int32));
+        for (int i = 0; i < n; ++i) {
+            inputs.push_back(st.kv_keys[i]);
+            inputs.push_back(st.kv_vals[i]);
+        }
+        return inputs;
+    };
+
+    // ── Step 0: kick off the pipeline with the known first_token ─────────────
+    {
+        int32_t fv  = (int32_t)first_token;
+        auto    out0 = st.compiled_fn(
+            build_inputs(mx::array(&fv, {1}, mx::int32), (int32_t)mlx_pos_));
+
+        // Lazy argmax: shape {1}, dtype int32 — not yet computed on CPU.
+        auto prev_tok_lazy = mx::reshape(mx::argmax(out0[0]), {1});
+        mx::async_eval(prev_tok_lazy);   // enqueue GPU work; return immediately
+
+        for (int i = 0; i < n; ++i) {
+            st.kv_keys[i] = out0[1 + 2*i];
+            st.kv_vals[i] = out0[1 + 2*i + 1];
+        }
+        ++mlx_pos_;
+
+        // ── Pipelined loop ────────────────────────────────────────────────────
+        // At the top of each iteration:
+        //   GPU is already computing prev_tok_lazy (step N-1).
+        //   We build step N's graph with prev_tok_lazy as its input token, then
+        //   async_eval it — so the GPU queues step N immediately after N-1 with
+        //   no CPU round-trip stall between them.
+        for (size_t step = 1; step + 1 < max_new_tokens; ++step) {
+            auto out_n = st.compiled_fn(build_inputs(prev_tok_lazy, (int32_t)mlx_pos_));
+            auto curr_tok_lazy = mx::reshape(mx::argmax(out_n[0]), {1});
+            mx::async_eval(curr_tok_lazy);   // GPU starts step N
+
+            // Block until step N-1 is done; GPU runs step N concurrently.
+            mx::eval(prev_tok_lazy);
+            int prev_token = prev_tok_lazy.item<int32_t>();
+
+            for (int i = 0; i < n; ++i) {
+                st.kv_keys[i] = out_n[1 + 2*i];
+                st.kv_vals[i] = out_n[1 + 2*i + 1];
+            }
+            ++mlx_pos_;
+
+            generated.push_back(prev_token);
+            if (on_token && !on_token(prev_token)) return generated;
+            if (eos_set.count(prev_token)) return generated;
+
+            prev_tok_lazy = std::move(curr_tok_lazy);
+        }
+
+        // ── Drain the last pipelined token ────────────────────────────────────
+        mx::eval(prev_tok_lazy);
+        int last_token = prev_tok_lazy.item<int32_t>();
+        generated.push_back(last_token);
+        if (on_token) on_token(last_token);
+    }
+
+    return generated;
 }
 
 } // namespace compute
