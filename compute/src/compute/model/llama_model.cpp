@@ -920,11 +920,10 @@ void LlamaModel::mlx_build_decode_fn() {
             out_kv_k.push_back(new_k);
             out_kv_v.push_back(new_v);
 
-            int kv_len = new_k.shape(1);
             float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-            auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,      (int)head_dim});
-            auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   kv_len, (int)head_dim});
-            auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   kv_len, (int)head_dim});
+            auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,  (int)head_dim});
+            auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   -1, (int)head_dim});
+            auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   -1, (int)head_dim});
             auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "");
 
             // [1, n_heads, 1, head_dim] → [1, hidden]
@@ -961,7 +960,7 @@ void LlamaModel::mlx_build_decode_fn() {
         return outputs;
     };
 
-    mlx_state_->compiled_fn = std::move(fn);
+    mlx_state_->compiled_fn = mx::compile(std::move(fn), /*shapeless=*/true);
     mlx_state_->fn_ready    = true;
 }
 
@@ -1149,7 +1148,10 @@ Result<std::vector<float>> LlamaModel::mlx_run_step(int token_id) {
     }
 
     auto outputs = st.compiled_fn(inputs);
-    mx::eval(outputs);
+
+    // Evaluate only logits immediately; KV caches are lazily evaluated in the
+    // next step, overlapping GPU KV computation with CPU sampling.
+    mx::eval(outputs[0]);
 
     for (int i = 0; i < n; ++i) {
         st.kv_keys[i] = outputs[1 + 2*i];
