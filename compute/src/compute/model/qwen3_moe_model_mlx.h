@@ -24,7 +24,8 @@ namespace compute {
 class Qwen3MoeModelMLX final : public Qwen3MoeModelBase, public LanguageModel {
 public:
     static Result<Qwen3MoeModelMLX> from_model_dir(
-        const std::filesystem::path& model_dir);
+        const std::filesystem::path& model_dir,
+        size_t                       context_size = 0);
 
     // ── LanguageModel interface ───────────────────────────────────────────────
 
@@ -40,7 +41,8 @@ public:
 
 private:
     struct MlxDecodeState {
-        std::vector<mlx::core::array> kv_keys;   // one per full-attention layer
+        int max_ctx = 0;
+        std::vector<mlx::core::array> kv_keys;   // one per full-attn layer, pre-alloc {nkv, max_ctx, hd}
         std::vector<mlx::core::array> kv_vals;
         std::vector<mlx::core::array> ssm_conv;  // one per SSM layer
         std::vector<mlx::core::array> ssm_rec;
@@ -53,7 +55,8 @@ private:
         ModelConfig                                       config,
         SimpleBpeTokenizer                                tokenizer,
         std::unordered_map<std::string, mlx::core::array> mlx_weights,
-        mlx::core::array                                  embed_mat);
+        mlx::core::array                                  embed_mat,
+        size_t                                            context_size);
 
     void init_empty_decode_state();
     void build_decode_fn();
@@ -63,6 +66,7 @@ private:
     mlx::core::array                                  embed_mat_;
     std::optional<MlxDecodeState>                     mlx_state_;
     size_t                                            cache_position_ = 0;
+    size_t                                            context_size_   = 0;
 };
 
 } // namespace compute

@@ -5,6 +5,10 @@
 #include <optional>
 #include <unordered_map>
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+#include <mlx/mlx.h>
+#endif
+
 namespace compute {
 
 /**
@@ -20,7 +24,8 @@ public:
     // Factory — loads config, weights, and tokenizer from model_dir.
     static Result<LlamaModel> from_model_dir(
         const std::filesystem::path& model_dir,
-        ComputeBackend*              backend);
+        ComputeBackend*              backend,
+        size_t                       context_size = 0);
 
     // ── LanguageModel interface ───────────────────────────────────────────────
 
@@ -103,6 +108,29 @@ private:
 
     // Cached dequantized embedding table (populated on first use for quantized models)
     mutable std::optional<Tensor>     dequantized_embed_tokens_;
+
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+    struct MlxDecodeState {
+        std::vector<mlx::core::array> kv_keys;
+        std::vector<mlx::core::array> kv_vals;
+        std::function<std::vector<mlx::core::array>(std::vector<mlx::core::array>)> compiled_fn;
+        bool fn_ready = false;
+    };
+
+    std::unordered_map<std::string, mlx::core::array> mlx_weights_;
+    mlx::core::array                                   mlx_embed_mat_;
+    std::optional<MlxDecodeState>                      mlx_state_;
+    size_t                                             context_size_ = 0;
+    size_t                                             mlx_pos_      = 0;
+
+    void mlx_setup(std::unordered_map<std::string, mlx::core::array> mlx_weights,
+                   mlx::core::array mlx_embed_mat,
+                   size_t context_size);
+    void mlx_init_state();
+    void mlx_build_decode_fn();
+    Result<std::vector<float>> mlx_prefill_batch(const std::vector<int>& prompt_ids);
+    Result<std::vector<float>> mlx_run_step(int token_id);
+#endif
 };
 
 } // namespace compute

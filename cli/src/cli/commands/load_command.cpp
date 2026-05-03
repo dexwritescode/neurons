@@ -43,6 +43,7 @@ void LoadCommand::setup_command(CLI::App& app) {
     load_cmd->add_option("--top-k", top_k_, "Top-k sampling (default: 50, 0=disabled)");
     load_cmd->add_option("--top-p", top_p_, "Top-p nucleus sampling threshold (default: 1.0=disabled)");
     load_cmd->add_option("--rep-penalty", rep_penalty_, "Repetition penalty >1 reduces repeated tokens (default: 1.0=disabled)");
+    load_cmd->add_option("--context", context_size_, "KV cache context window (default: model maximum)");
     load_cmd->add_flag("-v,--verbose", verbose_, "Show detailed model information");
     load_cmd->add_flag("--dry-run", dry_run_, "Show what would be loaded without running inference");
 
@@ -105,7 +106,7 @@ int LoadCommand::run_inference(const std::string& model_path) {
     }
 
     // Load model — auto-dispatches to LlamaModel / MistralModel / … based on config.json.
-    auto inf_result = compute::LanguageModel::load(model_path, backend.get());
+    auto inf_result = compute::LanguageModel::load(model_path, backend.get(), context_size_);
     if (!inf_result) {
         std::cerr << "\nError loading model: " << inf_result.error().message << "\n";
         return 1;

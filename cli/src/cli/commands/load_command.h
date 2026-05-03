@@ -22,11 +22,12 @@ private:
     bool verbose_;
     bool dry_run_;
     // Defaults mirror ChatEngine.h so the CLI faithfully reproduces GUI behavior.
-    int   max_tokens_  = 4096;
-    float temperature_ = 0.7f;
-    int   top_k_       = 40;
-    float top_p_       = 0.9f;
-    float rep_penalty_ = 1.1f;
+    int    max_tokens_  = 4096;
+    float  temperature_ = 0.7f;
+    int    top_k_       = 40;
+    float  top_p_       = 0.9f;
+    float  rep_penalty_ = 1.1f;
+    size_t context_size_ = 0;
 
     NeuronsConfig* config_;
     std::unique_ptr<models::registry::ModelRegistry> model_registry_;

@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <algorithm>
+#include <chrono>
+#include <mlx/compile.h>
 
 namespace mx = mlx::core;
 
@@ -95,7 +97,7 @@ static mx::array mlx_lin(const mx::array& x, const std::string& key, const WM& w
 static std::tuple<mx::array, mx::array, mx::array>
 mlx_full_attn_step(const mx::array& x, int layer_idx,
                     const mx::array& kv_k, const mx::array& kv_v,
-                    const mx::array& pos,
+                    const mx::array& pos, int max_ctx,
                     const WM& wm, int gs,
                     size_t n_heads, size_t n_kv, size_t head_dim,
                     float rope_theta, int rope_dims, float rms_eps)
@@ -140,14 +142,22 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
     auto k_rope = mx::reshape(mx::fast::rope(kt4, rope_dims, false, rope_theta, 1.0f, pos),
                               {(int)n_kv, 1, (int)head_dim});
 
-    auto new_k = mx::concatenate({kv_k, k_rope}, 1);
-    auto new_v = mx::concatenate({kv_v, vt},     1);
+    // Write new k/v into pre-allocated buffers at current position (dynamic index, fixed shape).
+    auto new_k = mx::slice_update(kv_k, k_rope, pos, {1});  // {nkv, max_ctx, hd}
+    auto new_v = mx::slice_update(kv_v, vt,     pos, {1});  // {nkv, max_ctx, hd}
+
+    // Additive causal mask: future positions get a large negative so softmax ignores them.
+    auto positions = mx::arange(0, max_ctx, 1, mx::int32);
+    auto mask = mx::reshape(
+        mx::astype(mx::where(positions > pos, mx::array(-1e9f), mx::array(0.0f)),
+                   mx::bfloat16),
+        {1, 1, 1, max_ctx});
 
     float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,  (int)head_dim});
-    auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   -1,  (int)head_dim});
-    auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   -1,  (int)head_dim});
-    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "");
+    auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,       (int)head_dim});
+    auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   max_ctx, (int)head_dim});
+    auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   max_ctx, (int)head_dim});
+    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "", mask);
 
     auto attn_flat = mx::reshape(attn4, {1, (int)(n_heads * head_dim)});
     auto gated = attn_flat * mx::sigmoid(gate);
@@ -218,9 +228,15 @@ mlx_ssm_step(const mx::array& x, int layer_idx,
     auto g_seq    = mx::exp(-(mx::exp(A_log) * sp));
     auto beta_seq = mx::astype(mx::sigmoid(b), mx::float32);
 
+    // Fused GatedDeltaNet recurrence — single Metal dispatch via custom kernel.
     using TA = mx::fast::TemplateArg;
     auto gd = gated_delta_kernel()(
-        {q_3d, k_3d, v_3d, g_seq, beta_seq, rec_state},
+        {mx::reshape(q_3d, {(int)Hk, (int)Dk}),
+         mx::reshape(k_3d, {(int)Hk, (int)Dk}),
+         mx::reshape(v_3d, {(int)Hv, (int)Dv}),
+         mx::reshape(mx::astype(g_seq, mx::float32), {(int)Hv}),
+         mx::reshape(beta_seq, {(int)Hv}),
+         rec_state},
         {mx::Shape{(int)Hv, (int)Dv}, mx::Shape{(int)Hv, (int)Dv, (int)Dk}},
         {mx::bfloat16, mx::float32},
         {32, (int)Dv, (int)Hv},
@@ -229,9 +245,8 @@ mlx_ssm_step(const mx::array& x, int layer_idx,
          {"Dk",  TA{(int)Dk}},      {"Dv",  TA{(int)Dv}},
          {"Hk",  TA{(int)Hk}},      {"Hv",  TA{(int)Hv}}},
         std::nullopt, false, mx::Device::gpu);
-
-    auto y_t    = gd[0];
-    auto h_new  = gd[1];
+    auto y_t   = gd[0];  // {Hv, Dv} bfloat16
+    auto h_new = gd[1];  // {Hv, Dv, Dk} float32
 
     auto out_normed = mx::fast::rms_norm(y_t, norm_w, rms_eps);
     auto gated      = mx::reshape(out_normed, {1, (int)Hv, (int)Dv}) *
@@ -338,7 +353,8 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
 // ═══════════════════════════════════════════════════════════════════════════════
 
 Result<Qwen3MoeModelMLX> Qwen3MoeModelMLX::from_model_dir(
-    const std::filesystem::path& model_dir)
+    const std::filesystem::path& model_dir,
+    size_t context_size)
 {
     auto result = ModelLoader::load_model_mlx(model_dir);
     if (!result) return std::unexpected(result.error());
@@ -371,17 +387,20 @@ Result<Qwen3MoeModelMLX> Qwen3MoeModelMLX::from_model_dir(
         std::move(config),
         std::move(*tok_result),
         std::move(mlx_weights),
-        std::move(embed_mat));
+        std::move(embed_mat),
+        context_size);
 }
 
 Qwen3MoeModelMLX::Qwen3MoeModelMLX(
     ModelConfig                                       config,
     SimpleBpeTokenizer                                tokenizer,
     std::unordered_map<std::string, mx::array>        mlx_weights,
-    mx::array                                         embed_mat)
+    mx::array                                         embed_mat,
+    size_t                                            context_size)
     : Qwen3MoeModelBase(std::move(config), std::move(tokenizer), {})
     , mlx_weights_(std::move(mlx_weights))
     , embed_mat_(std::move(embed_mat))
+    , context_size_(context_size)
 {}
 
 size_t Qwen3MoeModelMLX::num_parameters() const {
@@ -411,14 +430,19 @@ void Qwen3MoeModelMLX::init_empty_decode_state() {
     const size_t nkv = config_.num_key_value_heads;
     const size_t hd  = config_.effective_head_dim();
 
+    const int max_ctx = (context_size_ > 0)
+        ? (int)context_size_
+        : 4096;
+    st.max_ctx = max_ctx;
+
     for (int i = 0; i < n; ++i) {
         bool is_ssm = (i + 1) % 4 != 0;
         if (is_ssm) {
             st.ssm_conv.push_back(mx::zeros({(int)(ks-1), (int)cd},      mx::float32));
             st.ssm_rec.push_back( mx::zeros({(int)Hv, (int)Dv, (int)Dk}, mx::float32));
         } else {
-            st.kv_keys.push_back(mx::zeros({(int)nkv, 0, (int)hd}, mx::bfloat16));
-            st.kv_vals.push_back(mx::zeros({(int)nkv, 0, (int)hd}, mx::bfloat16));
+            st.kv_keys.push_back(mx::zeros({(int)nkv, max_ctx, (int)hd}, mx::bfloat16));
+            st.kv_vals.push_back(mx::zeros({(int)nkv, max_ctx, (int)hd}, mx::bfloat16));
         }
     }
 }
@@ -444,22 +468,24 @@ void Qwen3MoeModelMLX::build_decode_fn() {
     const size_t Dk = config_.linear_key_head_dim.value_or(128);
     const size_t ks = config_.linear_conv_kernel_dim.value_or(4);
     const size_t cd = Hk*Dk*2 + Hv*Dv;
-
     int n_full = 0, n_ssm = 0;
     for (int i = 0; i < n_layers; ++i)
         ((i+1) % 4 == 0) ? ++n_full : ++n_ssm;
 
-    WM wm = mlx_weights_;  // ref-counted copy — arrays share underlying data
+    const int max_ctx = mlx_state_->max_ctx;
+
+    WM wm = mlx_weights_;
     mx::array em = embed_mat_;
 
-    std::function<std::vector<mx::array>(const std::vector<mx::array>&)> fn =
+    auto fn =
         [wm          = std::move(wm),
          em          = std::move(em),
          n_layers, n_full, n_ssm,
          n_heads, n_kv, head_dim, hidden, vocab_size,
          rms_eps, rope_theta, rope_dims, gs,
          num_experts, top_k,
-         Hv, Dv, Hk, Dk, ks, cd]
+         Hv, Dv, Hk, Dk, ks, cd,
+         max_ctx]
         (const std::vector<mx::array>& inputs) mutable -> std::vector<mx::array>
     {
         const mx::array& token_id = inputs[0];
@@ -504,6 +530,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
                 } else {
                     auto [y, nk, nv] = mlx_full_attn_step(
                         normed, i, kv_k[fi], kv_v[fi], pos,
+                        max_ctx,
                         wm, gs, n_heads, n_kv, head_dim,
                         rope_theta, rope_dims, rms_eps);
                     out_kv_k.push_back(nk);
@@ -524,7 +551,10 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         hidden_arr = mx::fast::rms_norm(
             hidden_arr, wm.at("language_model.model.norm.weight"), rms_eps);
         hidden_arr = mlx_lin(hidden_arr, "language_model.lm_head", wm, gs);
-        mx::array logits = mx::reshape(hidden_arr, {(int)vocab_size});
+
+        // Cast logits to float32 here so run_decode_step needs only one mx::eval.
+        auto logits = mx::astype(
+            mx::reshape(hidden_arr, {(int)vocab_size}), mx::float32);
 
         std::vector<mx::array> outputs;
         outputs.reserve(1 + 2*n_full + 2*n_ssm);
@@ -540,7 +570,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         return outputs;
     };
 
-    mlx_state_->compiled_fn = std::move(fn);
+    mlx_state_->compiled_fn = mx::compile(std::move(fn));
     mlx_state_->fn_ready    = true;
 }
 
@@ -567,8 +597,17 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
     int32_t pos_val = static_cast<int32_t>(cache_position_);
     inputs.push_back(mx::array(&pos_val, {1}, mx::int32));
 
+    auto t0 = std::chrono::steady_clock::now();
     auto outputs = st.compiled_fn(inputs);
+    auto t1 = std::chrono::steady_clock::now();
     mx::eval(outputs);
+    auto t2 = std::chrono::steady_clock::now();
+    if (cache_position_ >= 80 && cache_position_ <= 90) {
+        auto compile_ms = std::chrono::duration<double, std::milli>(t1-t0).count();
+        auto eval_ms    = std::chrono::duration<double, std::milli>(t2-t1).count();
+        fprintf(stderr, "[pos %zu] compiled_fn: %.1fms  eval: %.1fms  total: %.1fms\n",
+                cache_position_, compile_ms, eval_ms, compile_ms+eval_ms);
+    }
 
     // Unpack updated state
     for (int fi = 0; fi < n_full; ++fi) {
@@ -582,14 +621,10 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
 
     ++cache_position_;
 
-    const mx::array& logits_arr = outputs[0];
+    const mx::array& logits = outputs[0];  // float32, cast inside compiled fn
     size_t vocab = config_.vocab_size;
     std::vector<float> result(vocab);
-    // Cast to float32: the forward pass runs in bfloat16, so logits are bfloat16.
-    // data<float>() silently reinterprets bits without astype — this converts first.
-    auto flat = mx::astype(mx::reshape(logits_arr, {(int)vocab}), mx::float32);
-    mx::eval(flat);
-    std::copy(flat.data<float>(), flat.data<float>() + vocab, result.data());
+    std::copy(logits.data<float>(), logits.data<float>() + vocab, result.data());
     return result;
 }
 

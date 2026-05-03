@@ -109,7 +109,8 @@ public:
     // Returns an error for unsupported model_type values.
     static Result<std::unique_ptr<LanguageModel>> load(
         const std::filesystem::path& model_dir,
-        ComputeBackend*              backend);
+        ComputeBackend*              backend,
+        size_t                       context_size = 0);
 
 protected:
     LanguageModel() = default;

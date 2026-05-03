@@ -63,7 +63,8 @@ Result<std::vector<int>> LanguageModel::generate(
 
 Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
     const std::filesystem::path& model_dir,
-    ComputeBackend*              backend)
+    ComputeBackend*              backend,
+    size_t                       context_size)
 {
     // Peek at config to determine the model family without loading weights twice.
     auto config_result = ModelLoader::load_config(model_dir);
@@ -73,7 +74,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     if (model_type == "llama" || model_type == "mistral" ||
         model_type == "qwen2" || model_type == "qwen3") {
-        auto result = LlamaModel::from_model_dir(model_dir, backend);
+        auto result = LlamaModel::from_model_dir(model_dir, backend, context_size);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<LlamaModel>(std::move(*result));
     }
@@ -86,7 +87,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     if (model_type == "qwen3_5_moe") {
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
-        auto result = Qwen3MoeModelMLX::from_model_dir(model_dir);
+        auto result = Qwen3MoeModelMLX::from_model_dir(model_dir, context_size);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<Qwen3MoeModelMLX>(std::move(*result));
 #else
