@@ -97,3 +97,4 @@ cmake-build-debug/
 .dolt/
 *.db
 .beads-credential-key
+.beads/
