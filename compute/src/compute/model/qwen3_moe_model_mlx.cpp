@@ -5,7 +5,7 @@
 
 #include <cmath>
 #include <algorithm>
-#include <chrono>
+#include <unordered_set>
 #include <mlx/compile.h>
 
 namespace mx = mlx::core;
@@ -97,11 +97,14 @@ static mx::array mlx_lin(const mx::array& x, const std::string& key, const WM& w
 static std::tuple<mx::array, mx::array, mx::array>
 mlx_full_attn_step(const mx::array& x, int layer_idx,
                     const mx::array& kv_k, const mx::array& kv_v,
-                    const mx::array& pos, int max_ctx,
+                    const mx::array& pos,
                     const WM& wm, int gs,
                     size_t n_heads, size_t n_kv, size_t head_dim,
                     float rope_theta, int rope_dims, float rms_eps)
 {
+    // kv_len is the current chunk allocation — baked into the compiled graph entry.
+    // compile() specialises a new graph each time a chunk boundary is crossed.
+    const int kv_len = (int)kv_k.shape()[1];
     const std::string pfx = "language_model.model.layers." +
                              std::to_string(layer_idx) + ".self_attn.";
 
@@ -142,22 +145,23 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
     auto k_rope = mx::reshape(mx::fast::rope(kt4, rope_dims, false, rope_theta, 1.0f, pos),
                               {(int)n_kv, 1, (int)head_dim});
 
-    // Write new k/v into pre-allocated buffers at current position (dynamic index, fixed shape).
-    auto new_k = mx::slice_update(kv_k, k_rope, pos, {1});  // {nkv, max_ctx, hd}
-    auto new_v = mx::slice_update(kv_v, vt,     pos, {1});  // {nkv, max_ctx, hd}
+    auto new_k = mx::slice_update(kv_k, k_rope, pos, {1});  // {nkv, kv_len, hd}
+    auto new_v = mx::slice_update(kv_v, vt,     pos, {1});
 
-    // Additive causal mask: future positions get a large negative so softmax ignores them.
-    auto positions = mx::arange(0, max_ctx, 1, mx::int32);
-    auto mask = mx::reshape(
-        mx::astype(mx::where(positions > pos, mx::array(-1e9f), mx::array(0.0f)),
-                   mx::bfloat16),
-        {1, 1, 1, max_ctx});
+    auto positions = mx::arange(0, kv_len, 1, mx::int32);
+    auto mask4 = mx::reshape(
+        mx::astype(
+            mx::where(mx::greater(positions, pos),
+                      mx::full({kv_len}, -1e9f, mx::float32),
+                      mx::zeros({kv_len}, mx::float32)),
+            mx::bfloat16),
+        {1, 1, 1, kv_len});
 
     float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
     auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,       (int)head_dim});
-    auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   max_ctx, (int)head_dim});
-    auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   max_ctx, (int)head_dim});
-    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "", mask);
+    auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   kv_len,  (int)head_dim});
+    auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   kv_len,  (int)head_dim});
+    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "", mask4);
 
     auto attn_flat = mx::reshape(attn4, {1, (int)(n_heads * head_dim)});
     auto gated = attn_flat * mx::sigmoid(gate);
@@ -430,10 +434,7 @@ void Qwen3MoeModelMLX::init_empty_decode_state() {
     const size_t nkv = config_.num_key_value_heads;
     const size_t hd  = config_.effective_head_dim();
 
-    const int max_ctx = (context_size_ > 0)
-        ? (int)context_size_
-        : 4096;
-    st.max_ctx = max_ctx;
+    static constexpr int kKvChunk = 64;
 
     for (int i = 0; i < n; ++i) {
         bool is_ssm = (i + 1) % 4 != 0;
@@ -441,8 +442,8 @@ void Qwen3MoeModelMLX::init_empty_decode_state() {
             st.ssm_conv.push_back(mx::zeros({(int)(ks-1), (int)cd},      mx::float32));
             st.ssm_rec.push_back( mx::zeros({(int)Hv, (int)Dv, (int)Dk}, mx::float32));
         } else {
-            st.kv_keys.push_back(mx::zeros({(int)nkv, max_ctx, (int)hd}, mx::bfloat16));
-            st.kv_vals.push_back(mx::zeros({(int)nkv, max_ctx, (int)hd}, mx::bfloat16));
+            st.kv_keys.push_back(mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16));
+            st.kv_vals.push_back(mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16));
         }
     }
 }
@@ -472,8 +473,6 @@ void Qwen3MoeModelMLX::build_decode_fn() {
     for (int i = 0; i < n_layers; ++i)
         ((i+1) % 4 == 0) ? ++n_full : ++n_ssm;
 
-    const int max_ctx = mlx_state_->max_ctx;
-
     WM wm = mlx_weights_;
     mx::array em = embed_mat_;
 
@@ -484,8 +483,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
          n_heads, n_kv, head_dim, hidden, vocab_size,
          rms_eps, rope_theta, rope_dims, gs,
          num_experts, top_k,
-         Hv, Dv, Hk, Dk, ks, cd,
-         max_ctx]
+         Hv, Dv, Hk, Dk, ks, cd]
         (const std::vector<mx::array>& inputs) mutable -> std::vector<mx::array>
     {
         const mx::array& token_id = inputs[0];
@@ -530,7 +528,6 @@ void Qwen3MoeModelMLX::build_decode_fn() {
                 } else {
                     auto [y, nk, nv] = mlx_full_attn_step(
                         normed, i, kv_k[fi], kv_v[fi], pos,
-                        max_ctx,
                         wm, gs, n_heads, n_kv, head_dim,
                         rope_theta, rope_dims, rms_eps);
                     out_kv_k.push_back(nk);
@@ -581,6 +578,25 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
     const int n_full = (int)st.kv_keys.size();
     const int n_ssm  = (int)st.ssm_conv.size();
 
+    // Expand KV by one chunk when the current allocation is full.
+    // This triggers a compile() retrace for the new kv_len, then reuses that
+    // specialized graph for the next kKvChunk decode steps.
+    static constexpr int kKvChunk = 64;
+    if (!st.kv_keys.empty()) {
+        const int kv_len = (int)st.kv_keys[0].shape()[1];
+        if ((int)cache_position_ >= kv_len) {
+            const size_t nkv = config_.num_key_value_heads;
+            const size_t hd  = config_.effective_head_dim();
+            auto zeros = mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16);
+            for (int fi = 0; fi < n_full; ++fi) {
+                st.kv_keys[fi] = mx::concatenate({st.kv_keys[fi], zeros}, 1);
+                st.kv_vals[fi] = mx::concatenate({st.kv_vals[fi], zeros}, 1);
+            }
+            mx::eval(st.kv_keys);
+            mx::eval(st.kv_vals);
+        }
+    }
+
     std::vector<mx::array> inputs;
     inputs.reserve(1 + 2*n_full + 2*n_ssm + 1);
 
@@ -597,17 +613,11 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
     int32_t pos_val = static_cast<int32_t>(cache_position_);
     inputs.push_back(mx::array(&pos_val, {1}, mx::int32));
 
-    auto t0 = std::chrono::steady_clock::now();
     auto outputs = st.compiled_fn(inputs);
-    auto t1 = std::chrono::steady_clock::now();
-    mx::eval(outputs);
-    auto t2 = std::chrono::steady_clock::now();
-    if (cache_position_ >= 80 && cache_position_ <= 90) {
-        auto compile_ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-        auto eval_ms    = std::chrono::duration<double, std::milli>(t2-t1).count();
-        fprintf(stderr, "[pos %zu] compiled_fn: %.1fms  eval: %.1fms  total: %.1fms\n",
-                cache_position_, compile_ms, eval_ms, compile_ms+eval_ms);
-    }
+
+    // Evaluate only logits immediately; KV and SSM state remain lazy and are
+    // consumed by the next step's compiled_fn call (or async_eval in pipelined path).
+    mx::eval(outputs[0]);
 
     // Unpack updated state
     for (int fi = 0; fi < n_full; ++fi) {
@@ -652,6 +662,112 @@ Result<std::vector<float>> Qwen3MoeModelMLX::decode(int token_id) {
     if (cache_position_ == 0)
         return std::unexpected(Error{ErrorCode::InvalidInput, "decode: call prefill() first"});
     return run_decode_step(token_id);
+}
+
+Result<std::vector<int>> Qwen3MoeModelMLX::generate(
+    const std::vector<int>& input_ids,
+    size_t max_new_tokens,
+    SamplingParams params,
+    std::function<bool(int)> on_token)
+{
+    if (params.temperature < 1e-6f)
+        return moe_generate_pipelined(input_ids, max_new_tokens, params, on_token);
+    return LanguageModel::generate(input_ids, max_new_tokens, params, on_token);
+}
+
+Result<std::vector<int>> Qwen3MoeModelMLX::moe_generate_pipelined(
+    const std::vector<int>& input_ids,
+    size_t max_new_tokens,
+    SamplingParams /*params*/,
+    std::function<bool(int)> on_token)
+{
+    std::unordered_set<int> eos_set;
+    if (config_.eos_token_ids.has_value()) {
+        for (int id : *config_.eos_token_ids) eos_set.insert(id);
+    } else {
+        eos_set.insert(2);
+    }
+
+    auto prefill_result = prefill(input_ids);
+    if (!prefill_result) return std::unexpected(prefill_result.error());
+
+    std::vector<int> generated;
+    generated.reserve(max_new_tokens);
+
+    if (max_new_tokens == 0) return generated;
+
+    // First token: CPU argmax from prefill logits.
+    const auto& fl = *prefill_result;
+    int first_token = (int)(std::max_element(fl.begin(), fl.end()) - fl.begin());
+    generated.push_back(first_token);
+    if (on_token && !on_token(first_token)) return generated;
+    if (eos_set.count(first_token) || generated.size() >= max_new_tokens) return generated;
+
+    auto& st      = *mlx_state_;
+    const int nf  = (int)st.kv_keys.size();
+    const int ns  = (int)st.ssm_conv.size();
+
+    auto build_inputs = [&](mx::array tok, int32_t pos) {
+        std::vector<mx::array> inputs;
+        inputs.reserve(1 + 2*nf + 2*ns + 1);
+        inputs.push_back(std::move(tok));
+        for (int i = 0; i < nf; ++i) {
+            inputs.push_back(st.kv_keys[i]);
+            inputs.push_back(st.kv_vals[i]);
+        }
+        for (int i = 0; i < ns; ++i) {
+            inputs.push_back(st.ssm_conv[i]);
+            inputs.push_back(st.ssm_rec[i]);
+        }
+        inputs.push_back(mx::array(&pos, {1}, mx::int32));
+        return inputs;
+    };
+
+    auto unpack_state = [&](const std::vector<mx::array>& out) {
+        for (int i = 0; i < nf; ++i) {
+            st.kv_keys[i] = out[1 + 2*i];
+            st.kv_vals[i] = out[1 + 2*i + 1];
+        }
+        for (int i = 0; i < ns; ++i) {
+            st.ssm_conv[i] = out[1 + 2*nf + 2*i];
+            st.ssm_rec[i]  = out[1 + 2*nf + 2*i + 1];
+        }
+    };
+
+    // Step 0: known first_token kicks off the pipeline.
+    int32_t fv   = (int32_t)first_token;
+    auto    out0 = st.compiled_fn(build_inputs(mx::array(&fv, {1}, mx::int32),
+                                               (int32_t)cache_position_));
+    auto prev_tok_lazy = mx::reshape(mx::argmax(out0[0]), {1});
+    mx::async_eval(prev_tok_lazy);
+
+    unpack_state(out0);
+    ++cache_position_;
+
+    for (size_t step = 1; step + 1 < max_new_tokens; ++step) {
+        auto out_n = st.compiled_fn(build_inputs(prev_tok_lazy, (int32_t)cache_position_));
+        auto curr_tok_lazy = mx::reshape(mx::argmax(out_n[0]), {1});
+        mx::async_eval(curr_tok_lazy);
+
+        mx::eval(prev_tok_lazy);
+        int prev_token = prev_tok_lazy.item<int32_t>();
+
+        unpack_state(out_n);
+        ++cache_position_;
+
+        generated.push_back(prev_token);
+        if (on_token && !on_token(prev_token)) return generated;
+        if (eos_set.count(prev_token)) return generated;
+
+        prev_tok_lazy = std::move(curr_tok_lazy);
+    }
+
+    mx::eval(prev_tok_lazy);
+    int last_token = prev_tok_lazy.item<int32_t>();
+    generated.push_back(last_token);
+    if (on_token) on_token(last_token);
+
+    return generated;
 }
 
 } // namespace compute

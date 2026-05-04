@@ -85,7 +85,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
         return std::make_unique<GemmaModel>(std::move(*result));
     }
 
-    if (model_type == "qwen3_5_moe") {
+    if (model_type == "qwen3_5_moe" || model_type == "qwen3_moe") {
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
         auto result = Qwen3MoeModelMLX::from_model_dir(model_dir, context_size);
         if (!result) return std::unexpected(result.error());
@@ -99,7 +99,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     return std::unexpected(Error{ErrorCode::InvalidModel,
         "Unsupported model type: \"" + model_type +
-        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe"});
+        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe, qwen3_moe"});
 }
 
 } // namespace compute

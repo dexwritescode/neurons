@@ -33,6 +33,12 @@ public:
     Result<std::vector<float>> decode(int token_id) override;
     void reset_cache() override;
 
+    Result<std::vector<int>> generate(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens = 4096,
+        SamplingParams params = {},
+        std::function<bool(int)> on_token = nullptr) override;
+
     const ModelConfig&        config()     const override { return config_; }
     const std::string&        model_type() const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()  const override { return tokenizer_; }
@@ -41,10 +47,9 @@ public:
 
 private:
     struct MlxDecodeState {
-        int max_ctx = 0;
-        std::vector<mlx::core::array> kv_keys;   // one per full-attn layer, pre-alloc {nkv, max_ctx, hd}
+        std::vector<mlx::core::array> kv_keys;   // one per full-attn layer, growing {nkv, pos, hd}
         std::vector<mlx::core::array> kv_vals;
-        std::vector<mlx::core::array> ssm_conv;  // one per SSM layer
+        std::vector<mlx::core::array> ssm_conv;  // one per SSM layer, fixed shape
         std::vector<mlx::core::array> ssm_rec;
         std::function<std::vector<mlx::core::array>(
             const std::vector<mlx::core::array>&)> compiled_fn;
@@ -61,6 +66,11 @@ private:
     void init_empty_decode_state();
     void build_decode_fn();
     Result<std::vector<float>> run_decode_step(int token_id);
+    Result<std::vector<int>>   moe_generate_pipelined(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens,
+        SamplingParams params,
+        std::function<bool(int)> on_token);
 
     std::unordered_map<std::string, mlx::core::array> mlx_weights_;
     mlx::core::array                                  embed_mat_;
