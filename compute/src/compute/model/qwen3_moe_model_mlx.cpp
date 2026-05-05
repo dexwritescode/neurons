@@ -643,11 +643,8 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
 
     auto outputs = st.compiled_fn(inputs);
 
-    // Evaluate only logits immediately; KV and SSM state remain lazy and are
-    // consumed by the next step's compiled_fn call (or async_eval in pipelined path).
-    mx::eval(outputs[0]);
-
-    // Unpack updated state
+    // Unpack updated state before eval so the arrays are named before async_eval
+    // submits GPU work.
     for (int fi = 0; fi < n_full; ++fi) {
         st.kv_keys[fi] = outputs[1 + 2*fi];
         st.kv_vals[fi] = outputs[1 + 2*fi + 1];
@@ -656,6 +653,25 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
         st.ssm_conv[li] = outputs[1 + 2*n_full + 2*li];
         st.ssm_rec[li]  = outputs[1 + 2*n_full + 2*li + 1];
     }
+
+    // async_eval the KV/SSM state alongside logits.  Materialising state each
+    // step breaks the lazy computation chain — without this, step N's KV holds
+    // a ref to step N-1's, all the way back to step 0, and MLX cannot free any
+    // intermediate graph state.  Observed growth: 20 GB → 32 GB on a 3574-token
+    // run without this call.
+    std::vector<mx::array> to_eval;
+    to_eval.reserve(1 + 2*n_full + 2*n_ssm);
+    to_eval.push_back(outputs[0]);
+    for (int fi = 0; fi < n_full; ++fi) {
+        to_eval.push_back(st.kv_keys[fi]);
+        to_eval.push_back(st.kv_vals[fi]);
+    }
+    for (int li = 0; li < n_ssm; ++li) {
+        to_eval.push_back(st.ssm_conv[li]);
+        to_eval.push_back(st.ssm_rec[li]);
+    }
+    mx::async_eval(to_eval);
+    mx::eval(outputs[0]);  // block until logits are ready for sampling
 
     ++cache_position_;
 
