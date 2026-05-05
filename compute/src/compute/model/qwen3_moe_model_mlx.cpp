@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_set>
+#include <mlx/compile.h>
 
 namespace mx = mlx::core;
 
@@ -108,15 +109,21 @@ static mx::array mlx_lin(const mx::array& x, const std::string& key, const WM& w
     return mx::matmul(x, mx::swapaxes(w, 0, 1));
 }
 
-// x: [1, T, hidden]; pos: [T] (absolute positions for RoPE)
-// Returns (out [1,T,hidden], new_kv_k [nkv,prev+T,hd], new_kv_v [nkv,prev+T,hd])
+// x: [1, T, hidden]; pos: scalar/[1] int32 RoPE offset.
+// context_size == 0 (default) → growing-KV path: concatenate kv_k/kv_v with new
+//   k/v and run SDPA over all filled positions.  Used for both prefill and decode
+//   (decode runs with compile(shapeless=true) so shapes are allowed to grow).
+// context_size > 0  → fixed-KV path: kv_k/kv_v pre-allocated {nkv,ctx,hd},
+//   new k/v scattered at pos via mx::where, SDPA masked over full ctx.  Kept for
+//   reference; the growing-KV path is faster in practice.
 static std::tuple<mx::array, mx::array, mx::array>
 mlx_full_attn_step(const mx::array& x, int layer_idx,
                     const mx::array& kv_k, const mx::array& kv_v,
                     const mx::array& pos,
                     const WM& wm, int gs,
                     size_t n_heads, size_t n_kv, size_t head_dim,
-                    float rope_theta, int rope_dims, float rms_eps)
+                    float rope_theta, int rope_dims, float rms_eps,
+                    int context_size = 0)
 {
     const std::string pfx = "language_model.model.layers." +
                              std::to_string(layer_idx) + ".self_attn.";
@@ -124,20 +131,18 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
     int T = x.shape(1);
     auto x2d = mx::reshape(x, {T, (int)x.shape(2)});
 
-    auto q_raw = mlx_lin(x2d, pfx + "q_proj", wm, gs);  // [T, n_heads*2*head_dim]
-    auto k_raw = mlx_lin(x2d, pfx + "k_proj", wm, gs);  // [T, n_kv*head_dim]
-    auto v_raw = mlx_lin(x2d, pfx + "v_proj", wm, gs);  // [T, n_kv*head_dim]
+    auto q_raw = mlx_lin(x2d, pfx + "q_proj", wm, gs);
+    auto k_raw = mlx_lin(x2d, pfx + "k_proj", wm, gs);
+    auto v_raw = mlx_lin(x2d, pfx + "v_proj", wm, gs);
 
-    // Split q into value heads and gating heads
     auto q_gate = mx::reshape(q_raw, {T, (int)n_heads, 2, (int)head_dim});
-    auto q_h    = mx::take(q_gate, mx::array(0, mx::int32), 2);  // [T, n_heads, head_dim]
-    auto gate_h = mx::take(q_gate, mx::array(1, mx::int32), 2);  // [T, n_heads, head_dim]
+    auto q_h    = mx::take(q_gate, mx::array(0, mx::int32), 2);
+    auto gate_h = mx::take(q_gate, mx::array(1, mx::int32), 2);
     auto gate   = mx::reshape(gate_h, {1, T, (int)(n_heads * head_dim)});
 
-    // Reshape to [n_heads/n_kv, T, head_dim] for RoPE + SDPA
-    auto qt = mx::swapaxes(q_h, 0, 1);                                           // [nh, T, hd]
-    auto kt = mx::swapaxes(mx::reshape(k_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);  // [nkv, T, hd]
-    auto vt = mx::swapaxes(mx::reshape(v_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);  // [nkv, T, hd]
+    auto qt = mx::swapaxes(q_h, 0, 1);
+    auto kt = mx::swapaxes(mx::reshape(k_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);
+    auto vt = mx::swapaxes(mx::reshape(v_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);
 
     {
         auto it = wm.find(pfx + "q_norm.weight");
@@ -156,7 +161,6 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
         }
     }
 
-    // RoPE over all T query and key positions at once
     auto qt4    = mx::reshape(qt, {1, (int)n_heads, T, (int)head_dim});
     auto kt4    = mx::reshape(kt, {1, (int)n_kv,   T, (int)head_dim});
     auto q_rope = mx::reshape(mx::fast::rope(qt4, rope_dims, false, rope_theta, 1.0f, pos),
@@ -164,14 +168,45 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
     auto k_rope = mx::reshape(mx::fast::rope(kt4, rope_dims, false, rope_theta, 1.0f, pos),
                               {(int)n_kv, T, (int)head_dim});
 
-    auto new_k = mx::concatenate({kv_k, k_rope}, 1);  // {nkv, prev+T, hd}
-    auto new_v = mx::concatenate({kv_v, vt},     1);  // {nkv, prev+T, hd}
-
     float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    auto q4    = mx::reshape(q_rope, {1, (int)n_heads, T,  (int)head_dim});
-    auto k4    = mx::reshape(new_k,  {1, (int)n_kv,   -1, (int)head_dim});
-    auto v4    = mx::reshape(new_v,  {1, (int)n_kv,   -1, (int)head_dim});
-    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale);
+
+    // Returns (new_k, new_v, attn4) — structured binding avoids default-constructed arrays.
+    auto [new_k, new_v, attn4] =
+        [&]() -> std::tuple<mx::array, mx::array, mx::array> {
+        if (context_size > 0) {
+            // Fixed-KV decode path: scatter new k/v at pos, attend with causal mask.
+            auto range  = mx::arange(0, context_size, 1, mx::int32);                // {ctx}
+            auto is_pos = mx::reshape(mx::equal(range, pos), {1, context_size, 1}); // {1,ctx,1}
+            auto nk = mx::where(is_pos,
+                          mx::broadcast_to(k_rope, {(int)n_kv, context_size, (int)head_dim}),
+                          kv_k);
+            auto nv = mx::where(is_pos,
+                          mx::broadcast_to(vt, {(int)n_kv, context_size, (int)head_dim}),
+                          kv_v);
+            // Additive mask: 0 for positions 0..pos, -1e9 for pos+1..ctx-1
+            // Must be bfloat16 to match attention output dtype.
+            auto mask = mx::astype(
+                            mx::reshape(
+                                mx::where(
+                                    mx::less_equal(range, pos),
+                                    mx::zeros({context_size}, mx::float32),
+                                    mx::full({context_size}, -1e9f, mx::float32)),
+                                {1, 1, 1, context_size}),
+                            mx::bfloat16);
+            auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,           (int)head_dim});
+            auto k4 = mx::reshape(nk,     {1, (int)n_kv,   context_size, (int)head_dim});
+            auto v4 = mx::reshape(nv,     {1, (int)n_kv,   context_size, (int)head_dim});
+            return {nk, nv, mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "array", mask)};
+        } else {
+            // Growing-KV prefill path: concatenate and attend (no mask needed for causal).
+            auto nk = mx::concatenate({kv_k, k_rope}, 1);
+            auto nv = mx::concatenate({kv_v, vt},     1);
+            auto q4 = mx::reshape(q_rope, {1, (int)n_heads, T,  (int)head_dim});
+            auto k4 = mx::reshape(nk,     {1, (int)n_kv,   -1, (int)head_dim});
+            auto v4 = mx::reshape(nv,     {1, (int)n_kv,   -1, (int)head_dim});
+            return {nk, nv, mx::fast::scaled_dot_product_attention(q4, k4, v4, scale)};
+        }
+    }();
 
     auto attn_flat = mx::reshape(attn4, {1, T, (int)(n_heads * head_dim)});
     auto gated     = attn_flat * mx::sigmoid(gate);
@@ -579,7 +614,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         return outputs;
     };
 
-    mlx_state_->compiled_fn = std::move(fn);
+    mlx_state_->compiled_fn = mx::compile(std::move(fn), /*shapeless=*/true);
     mlx_state_->fn_ready    = true;
 }
 

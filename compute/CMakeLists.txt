@@ -10,10 +10,14 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     include(FetchContent)
 
     set(MLX_VERSION "0.31.2")
+    # Using fork until https://github.com/ml-explore/mlx/pull/3485 merges.
+    # GIT_TAG is the exact commit on fix/custom-kernel-output-shapes that adds
+    # CustomKernel::output_shapes(), required for mx::compile(shapeless=true).
+    # TODO: revert to upstream tag once PR is merged and a new release cuts.
     FetchContent_Declare(
         mlx
-        GIT_REPOSITORY https://github.com/ml-explore/mlx.git
-        GIT_TAG        v${MLX_VERSION}
+        GIT_REPOSITORY https://github.com/dexwritescode/mlx.git
+        GIT_TAG        0b6cedbbf4b945753b5a6ef17e3a5f8df9dacfc3
     )
 
     set(MLX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
