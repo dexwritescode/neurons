@@ -6,7 +6,6 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_set>
-#include <mlx/compile.h>
 
 namespace mx = mlx::core;
 
@@ -20,57 +19,72 @@ namespace {
 using WM = std::unordered_map<std::string, mx::array>;
 
 // ── Fused GatedDeltaNet decode kernel ─────────────────────────────────────────
-static constexpr const char* kGatedDeltaDecodeSource = R"msl(
-    auto hv_idx = thread_position_in_grid.z;
+// Mirrors mlx-lm gated_delta.py: custom Metal kernel used in inference.
+// Handles an arbitrary sequence of T tokens in one GPU dispatch (T=1 for decode).
+static constexpr const char* kGatedDeltaSource = R"msl(
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
     auto hk_idx = hv_idx / (Hv / Hk);
     constexpr int n_per_t = Dk / 32;
 
-    auto q_    = q    + hk_idx * Dk;
-    auto k_    = k    + hk_idx * Dk;
-    auto v_    = v    + hv_idx * Dv;
-    y         += hv_idx * Dv;
+    // q, k: [B, T, Hk, Dk]
+    auto q_ = q + b_idx * T * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * T * Hk * Dk + hk_idx * Dk;
+    // v, y: [B, T, Hv, Dv]
+    auto v_ = v + b_idx * T * Hv * Dv + hv_idx * Dv;
+    y      += b_idx * T * Hv * Dv + hv_idx * Dv;
 
     auto dk_idx = thread_position_in_threadgroup.x;
     auto dv_idx = thread_position_in_grid.y;
 
-    auto i_state = state_in  + (hv_idx * Dv + dv_idx) * Dk;
-    auto o_state = state_out + (hv_idx * Dv + dv_idx) * Dk;
+    // state_in, state_out: [B, Hv, Dv, Dk]
+    auto i_state = state_in  + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
 
-    float s[n_per_t];
+    float state[n_per_t];
     for (int i = 0; i < n_per_t; ++i)
-        s[i] = (float)i_state[n_per_t * dk_idx + i];
+        state[i] = (float)i_state[n_per_t * dk_idx + i];
 
-    float g_val    = (float)g[hv_idx];
-    float beta_val = (float)beta[hv_idx];
+    // g: [B, T, Hv]
+    auto g_    = g    + b_idx * T * Hv;
+    auto beta_ = beta + b_idx * T * Hv;
 
-    float kv_mem = 0.0f;
-    for (int i = 0; i < n_per_t; ++i) {
-        s[i] *= g_val;
-        kv_mem += s[i] * (float)k_[n_per_t * dk_idx + i];
+    for (int t = 0; t < T; ++t) {
+        float kv_mem = 0.0f;
+        for (int i = 0; i < n_per_t; ++i) {
+            auto s_idx = n_per_t * dk_idx + i;
+            state[i] = state[i] * g_[hv_idx];
+            kv_mem += state[i] * k_[s_idx];
+        }
+        kv_mem = simd_sum(kv_mem);
+
+        auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+
+        float out = 0.0f;
+        for (int i = 0; i < n_per_t; ++i) {
+            auto s_idx = n_per_t * dk_idx + i;
+            state[i] = state[i] + k_[s_idx] * delta;
+            out += state[i] * q_[s_idx];
+        }
+        out = simd_sum(out);
+        if (thread_index_in_simdgroup == 0)
+            y[dv_idx] = (InT)out;
+
+        q_ += Hk * Dk;  k_ += Hk * Dk;
+        v_ += Hv * Dv;  y  += Hv * Dv;
+        g_    += Hv;    beta_ += Hv;
     }
-    kv_mem = simd_sum(kv_mem);
-
-    float delta = ((float)v_[dv_idx] - kv_mem) * beta_val;
-
-    float out = 0.0f;
-    for (int i = 0; i < n_per_t; ++i) {
-        s[i] += (float)k_[n_per_t * dk_idx + i] * delta;
-        out  += s[i] * (float)q_[n_per_t * dk_idx + i];
-    }
-    out = simd_sum(out);
-    if (thread_index_in_simdgroup == 0)
-        y[dv_idx] = (InT)out;
-
     for (int i = 0; i < n_per_t; ++i)
-        o_state[n_per_t * dk_idx + i] = (StT)s[i];
+        o_state[n_per_t * dk_idx + i] = (StT)state[i];
 )msl";
 
 static const mx::fast::CustomKernelFunction& gated_delta_kernel() {
     static const auto fn = mx::fast::metal_kernel(
-        "neurons_gated_delta_decode",
-        {"q", "k", "v", "g", "beta", "state_in"},
+        "neurons_gated_delta",
+        {"q", "k", "v", "g", "beta", "state_in", "T"},
         {"y", "state_out"},
-        kGatedDeltaDecodeSource);
+        kGatedDeltaSource);
     return fn;
 }
 
@@ -94,6 +108,8 @@ static mx::array mlx_lin(const mx::array& x, const std::string& key, const WM& w
     return mx::matmul(x, mx::swapaxes(w, 0, 1));
 }
 
+// x: [1, T, hidden]; pos: [T] (absolute positions for RoPE)
+// Returns (out [1,T,hidden], new_kv_k [nkv,prev+T,hd], new_kv_v [nkv,prev+T,hd])
 static std::tuple<mx::array, mx::array, mx::array>
 mlx_full_attn_step(const mx::array& x, int layer_idx,
                     const mx::array& kv_k, const mx::array& kv_v,
@@ -102,74 +118,75 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
                     size_t n_heads, size_t n_kv, size_t head_dim,
                     float rope_theta, int rope_dims, float rms_eps)
 {
-    // kv_len is the current chunk allocation — baked into the compiled graph entry.
-    // compile() specialises a new graph each time a chunk boundary is crossed.
-    const int kv_len = (int)kv_k.shape()[1];
     const std::string pfx = "language_model.model.layers." +
                              std::to_string(layer_idx) + ".self_attn.";
 
-    auto q_raw = mlx_lin(x, pfx + "q_proj", wm, gs);
-    auto k_raw = mlx_lin(x, pfx + "k_proj", wm, gs);
-    auto v_raw = mlx_lin(x, pfx + "v_proj", wm, gs);
+    int T = x.shape(1);
+    auto x2d = mx::reshape(x, {T, (int)x.shape(2)});
 
-    auto q_gate = mx::reshape(q_raw, {1, (int)n_heads, 2, (int)head_dim});
-    auto q_h    = mx::take(q_gate, mx::array(0, mx::int32), 2);
-    auto gate_h = mx::take(q_gate, mx::array(1, mx::int32), 2);
-    auto gate   = mx::reshape(gate_h, {1, (int)(n_heads * head_dim)});
+    auto q_raw = mlx_lin(x2d, pfx + "q_proj", wm, gs);  // [T, n_heads*2*head_dim]
+    auto k_raw = mlx_lin(x2d, pfx + "k_proj", wm, gs);  // [T, n_kv*head_dim]
+    auto v_raw = mlx_lin(x2d, pfx + "v_proj", wm, gs);  // [T, n_kv*head_dim]
 
-    auto kt = mx::swapaxes(mx::reshape(k_raw, {1, (int)n_kv, (int)head_dim}), 0, 1);
-    auto vt = mx::swapaxes(mx::reshape(v_raw, {1, (int)n_kv, (int)head_dim}), 0, 1);
-    auto qt = mx::swapaxes(q_h, 0, 1);
+    // Split q into value heads and gating heads
+    auto q_gate = mx::reshape(q_raw, {T, (int)n_heads, 2, (int)head_dim});
+    auto q_h    = mx::take(q_gate, mx::array(0, mx::int32), 2);  // [T, n_heads, head_dim]
+    auto gate_h = mx::take(q_gate, mx::array(1, mx::int32), 2);  // [T, n_heads, head_dim]
+    auto gate   = mx::reshape(gate_h, {1, T, (int)(n_heads * head_dim)});
+
+    // Reshape to [n_heads/n_kv, T, head_dim] for RoPE + SDPA
+    auto qt = mx::swapaxes(q_h, 0, 1);                                           // [nh, T, hd]
+    auto kt = mx::swapaxes(mx::reshape(k_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);  // [nkv, T, hd]
+    auto vt = mx::swapaxes(mx::reshape(v_raw, {T, (int)n_kv, (int)head_dim}), 0, 1);  // [nkv, T, hd]
 
     {
         auto it = wm.find(pfx + "q_norm.weight");
         if (it != wm.end()) {
-            auto f = mx::reshape(qt, {(int)n_heads, (int)head_dim});
+            auto f = mx::reshape(qt, {(int)n_heads * T, (int)head_dim});
             qt = mx::reshape(mx::fast::rms_norm(f, it->second, rms_eps),
-                             {(int)n_heads, 1, (int)head_dim});
+                             {(int)n_heads, T, (int)head_dim});
         }
     }
     {
         auto it = wm.find(pfx + "k_norm.weight");
         if (it != wm.end()) {
-            auto f = mx::reshape(kt, {(int)n_kv, (int)head_dim});
+            auto f = mx::reshape(kt, {(int)n_kv * T, (int)head_dim});
             kt = mx::reshape(mx::fast::rms_norm(f, it->second, rms_eps),
-                             {(int)n_kv, 1, (int)head_dim});
+                             {(int)n_kv, T, (int)head_dim});
         }
     }
 
-    auto qt4 = mx::reshape(qt, {1, (int)n_heads, 1, (int)head_dim});
-    auto kt4 = mx::reshape(kt, {1, (int)n_kv, 1, (int)head_dim});
+    // RoPE over all T query and key positions at once
+    auto qt4    = mx::reshape(qt, {1, (int)n_heads, T, (int)head_dim});
+    auto kt4    = mx::reshape(kt, {1, (int)n_kv,   T, (int)head_dim});
     auto q_rope = mx::reshape(mx::fast::rope(qt4, rope_dims, false, rope_theta, 1.0f, pos),
-                              {(int)n_heads, 1, (int)head_dim});
+                              {(int)n_heads, T, (int)head_dim});
     auto k_rope = mx::reshape(mx::fast::rope(kt4, rope_dims, false, rope_theta, 1.0f, pos),
-                              {(int)n_kv, 1, (int)head_dim});
+                              {(int)n_kv, T, (int)head_dim});
 
-    auto new_k = mx::slice_update(kv_k, k_rope, pos, {1});  // {nkv, kv_len, hd}
-    auto new_v = mx::slice_update(kv_v, vt,     pos, {1});
-
-    auto positions = mx::arange(0, kv_len, 1, mx::int32);
-    auto mask4 = mx::reshape(
-        mx::astype(
-            mx::where(mx::greater(positions, pos),
-                      mx::full({kv_len}, -1e9f, mx::float32),
-                      mx::zeros({kv_len}, mx::float32)),
-            mx::bfloat16),
-        {1, 1, 1, kv_len});
+    auto new_k = mx::concatenate({kv_k, k_rope}, 1);  // {nkv, prev+T, hd}
+    auto new_v = mx::concatenate({kv_v, vt},     1);  // {nkv, prev+T, hd}
 
     float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    auto q4 = mx::reshape(q_rope, {1, (int)n_heads, 1,       (int)head_dim});
-    auto k4 = mx::reshape(new_k,  {1, (int)n_kv,   kv_len,  (int)head_dim});
-    auto v4 = mx::reshape(new_v,  {1, (int)n_kv,   kv_len,  (int)head_dim});
-    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale, "", mask4);
+    auto q4    = mx::reshape(q_rope, {1, (int)n_heads, T,  (int)head_dim});
+    auto k4    = mx::reshape(new_k,  {1, (int)n_kv,   -1, (int)head_dim});
+    auto v4    = mx::reshape(new_v,  {1, (int)n_kv,   -1, (int)head_dim});
+    auto attn4 = mx::fast::scaled_dot_product_attention(q4, k4, v4, scale);
 
-    auto attn_flat = mx::reshape(attn4, {1, (int)(n_heads * head_dim)});
-    auto gated = attn_flat * mx::sigmoid(gate);
-    auto out   = mlx_lin(gated, pfx + "o_proj", wm, gs);
+    auto attn_flat = mx::reshape(attn4, {1, T, (int)(n_heads * head_dim)});
+    auto gated     = attn_flat * mx::sigmoid(gate);
+    auto out       = mlx_lin(mx::reshape(gated, {T, (int)(n_heads * head_dim)}),
+                              pfx + "o_proj", wm, gs);
+    out = mx::reshape(out, {1, T, (int)x.shape(2)});
 
     return {out, new_k, new_v};
 }
 
+// Shared guts for both decode (T=1) and prefill (T>1).
+// x:         [1, T, hidden] bfloat16
+// conv_state:[ks-1, conv_dim] float32
+// rec_state: [Hv, Dv, Dk]   float32
+// Returns:   (out [1,T,hidden], new_conv_state [ks-1,conv_dim], new_rec_state [Hv,Dv,Dk])
 static std::tuple<mx::array, mx::array, mx::array>
 mlx_ssm_step(const mx::array& x, int layer_idx,
               const mx::array& conv_state, const mx::array& rec_state,
@@ -181,82 +198,96 @@ mlx_ssm_step(const mx::array& x, int layer_idx,
     const std::string pfx = "language_model.model.layers." +
                              std::to_string(layer_idx) + ".linear_attn.";
 
-    auto qkv = mlx_lin(x, pfx + "in_proj_qkv", wm, gs);
-    auto z   = mlx_lin(x, pfx + "in_proj_z",   wm, gs);
-    auto b   = mlx_lin(x, pfx + "in_proj_b",   wm, gs);
-    auto a   = mlx_lin(x, pfx + "in_proj_a",   wm, gs);
+    // x is [1, T, hidden] — flatten to [T, hidden] for linear projections
+    int T = x.shape(1);
+    auto x2d = mx::reshape(x, {T, (int)x.shape(2)});
+
+    auto qkv = mlx_lin(x2d, pfx + "in_proj_qkv", wm, gs);  // [T, conv_dim]
+    auto z   = mlx_lin(x2d, pfx + "in_proj_z",   wm, gs);  // [T, Hv*Dv]
+    auto b   = mlx_lin(x2d, pfx + "in_proj_b",   wm, gs);  // [T, Hv]
+    auto a   = mlx_lin(x2d, pfx + "in_proj_a",   wm, gs);  // [T, Hv]
 
     const mx::array& A_log    = wm.at(pfx + "A_log");
     const mx::array& dt_bias  = wm.at(pfx + "dt_bias");
     const mx::array& conv1d_w = wm.at(pfx + "conv1d.weight");
     const mx::array& norm_w   = wm.at(pfx + "norm.weight");
 
+    // Conv1d over [ks-1 history + T new tokens], depthwise.
+    // conv_input: [ks-1+T, conv_dim]; output: [T, conv_dim] (valid conv, stride 1)
     auto conv_input = mx::concatenate({conv_state, qkv}, 0);
-    auto tail_idx   = mx::arange(1, (int)(kernel_size - 1), 1, mx::int32);
-    auto conv_tail  = mx::take(conv_state, tail_idx, 0);
-    auto new_conv   = mx::concatenate({conv_tail, qkv}, 0);
+    // New conv state = last (ks-1) rows of conv_input (take avoids Slice in compiled fn)
+    auto tail_idx = mx::arange(T, T + (int)(kernel_size - 1), 1, mx::int32);
+    auto new_conv = mx::take(conv_input, tail_idx, 0);
 
-    auto ci4      = mx::reshape(conv_input, {1, (int)kernel_size, (int)conv_dim});
+    auto ci4      = mx::reshape(conv_input, {1, (int)(kernel_size - 1 + T), (int)conv_dim});
     auto conv_raw = mx::squeeze(mx::conv1d(ci4, conv1d_w, 1, 0, 1, (int)conv_dim), 0);
+    // conv_raw: [T, conv_dim]
     auto conv_out = mx::sigmoid(conv_raw) * conv_raw;
 
     const size_t key_dim = Hk * Dk;
-    auto q_idx  = mx::arange(0,            (int)key_dim,     1, mx::int32);
-    auto k_idx  = mx::arange((int)key_dim, (int)(2*key_dim), 1, mx::int32);
-    auto v_idx  = mx::arange((int)(2*key_dim), (int)conv_dim, 1, mx::int32);
+    // Split conv_out into q/k/v along feature dim (take avoids Slice in compiled fn)
+    auto q_idx  = mx::arange(0,              (int)key_dim,      1, mx::int32);
+    auto k_idx  = mx::arange((int)key_dim,   (int)(2*key_dim),  1, mx::int32);
+    auto v_idx  = mx::arange((int)(2*key_dim),(int)conv_dim,     1, mx::int32);
     auto q_flat = mx::take(conv_out, q_idx, 1);
     auto k_flat = mx::take(conv_out, k_idx, 1);
     auto v_flat = mx::take(conv_out, v_idx, 1);
 
-    auto q_3d = mx::reshape(q_flat, {1, (int)Hk, (int)Dk});
-    auto k_3d = mx::reshape(k_flat, {1, (int)Hk, (int)Dk});
-    auto v_3d = mx::reshape(v_flat, {1, (int)Hv, (int)Dv});
-    auto z_3d = mx::reshape(z,      {1, (int)Hv, (int)Dv});
+    // Reshape to [1, T, H, D] — B=1 throughout
+    auto q_3d = mx::reshape(q_flat, {1, T, (int)Hk, (int)Dk});
+    auto k_3d = mx::reshape(k_flat, {1, T, (int)Hk, (int)Dk});
+    auto v_3d = mx::reshape(v_flat, {1, T, (int)Hv, (int)Dv});
+    auto z_3d = mx::reshape(z,      {1, T, (int)Hv, (int)Dv});
 
+    // Per-head RMS norm on q and k (across Dk dim)
     mx::array ones_Dk = mx::ones({(int)Dk}, mx::float32);
     {
-        auto f = mx::reshape(q_3d, {(int)Hk, (int)Dk});
-        q_3d = mx::reshape(mx::fast::rms_norm(f, ones_Dk, 1e-6f), {1, (int)Hk, (int)Dk});
+        auto f = mx::reshape(q_3d, {T * (int)Hk, (int)Dk});
+        q_3d = mx::reshape(mx::fast::rms_norm(f, ones_Dk, 1e-6f), {1, T, (int)Hk, (int)Dk});
     }
     {
-        auto f = mx::reshape(k_3d, {(int)Hk, (int)Dk});
-        k_3d = mx::reshape(mx::fast::rms_norm(f, ones_Dk, 1e-6f), {1, (int)Hk, (int)Dk});
+        auto f = mx::reshape(k_3d, {T * (int)Hk, (int)Dk});
+        k_3d = mx::reshape(mx::fast::rms_norm(f, ones_Dk, 1e-6f), {1, T, (int)Hk, (int)Dk});
     }
 
     float inv_sqrt_Dk = 1.0f / std::sqrt(static_cast<float>(Dk));
     q_3d = q_3d * mx::array(inv_sqrt_Dk * inv_sqrt_Dk);
     k_3d = k_3d * mx::array(inv_sqrt_Dk);
 
-    auto a_biased = a + dt_bias;
+    auto a_biased = a + dt_bias;                                  // [T, Hv]
     auto sp       = mx::log(mx::exp(a_biased) + mx::array(1.0f));
-    auto g_seq    = mx::exp(-(mx::exp(A_log) * sp));
-    auto beta_seq = mx::astype(mx::sigmoid(b), mx::float32);
+    auto g_seq    = mx::exp(-(mx::exp(A_log) * sp));              // [T, Hv]
+    auto beta_seq = mx::astype(mx::sigmoid(b), mx::float32);      // [T, Hv]
 
-    // Fused GatedDeltaNet recurrence — single Metal dispatch via custom kernel.
+    // Custom Metal GatedDeltaNet kernel — one GPU dispatch for all T tokens.
     using TA = mx::fast::TemplateArg;
+    auto T_arr = mx::array(&T, {}, mx::int32);
     auto gd = gated_delta_kernel()(
-        {mx::reshape(q_3d, {(int)Hk, (int)Dk}),
-         mx::reshape(k_3d, {(int)Hk, (int)Dk}),
-         mx::reshape(v_3d, {(int)Hv, (int)Dv}),
-         mx::reshape(mx::astype(g_seq, mx::float32), {(int)Hv}),
-         mx::reshape(beta_seq, {(int)Hv}),
-         rec_state},
-        {mx::Shape{(int)Hv, (int)Dv}, mx::Shape{(int)Hv, (int)Dv, (int)Dk}},
+        {q_3d,                                                           // [1, T, Hk, Dk]
+         k_3d,                                                           // [1, T, Hk, Dk]
+         v_3d,                                                           // [1, T, Hv, Dv]
+         mx::reshape(mx::astype(g_seq,    mx::float32), {1, T, (int)Hv}),
+         mx::reshape(mx::astype(beta_seq, mx::float32), {1, T, (int)Hv}),
+         mx::reshape(rec_state, {1, (int)Hv, (int)Dv, (int)Dk}),
+         T_arr},
+        {mx::Shape{1, T, (int)Hv, (int)Dv}, mx::Shape{1, (int)Hv, (int)Dv, (int)Dk}},
         {mx::bfloat16, mx::float32},
-        {32, (int)Dv, (int)Hv},
+        {32, (int)Dv, 1 * (int)Hv},   // grid(32, Dv, B*Hv); T is a loop inside the kernel
         {32, 4, 1},
         {{"InT", TA{mx::bfloat16}}, {"StT", TA{mx::float32}},
          {"Dk",  TA{(int)Dk}},      {"Dv",  TA{(int)Dv}},
          {"Hk",  TA{(int)Hk}},      {"Hv",  TA{(int)Hv}}},
         std::nullopt, false, mx::Device::gpu);
-    auto y_t   = gd[0];  // {Hv, Dv} bfloat16
-    auto h_new = gd[1];  // {Hv, Dv, Dk} float32
 
-    auto out_normed = mx::fast::rms_norm(y_t, norm_w, rms_eps);
-    auto gated      = mx::reshape(out_normed, {1, (int)Hv, (int)Dv}) *
+    // y: [1, T, Hv, Dv] bfloat16; norm_w has Dv elements — norm per (T,Hv) row
+    auto y_T    = mx::reshape(gd[0], {T * (int)Hv, (int)Dv});
+    auto h_new  = mx::reshape(gd[1], {(int)Hv, (int)Dv, (int)Dk});   // float32
+
+    auto out_normed = mx::fast::rms_norm(y_T, norm_w, rms_eps);       // [T*Hv, Dv]
+    auto gated      = mx::reshape(out_normed, {1, T, (int)Hv, (int)Dv}) *
                       mx::sigmoid(z_3d) * z_3d;
-    auto gated_flat = mx::reshape(gated, {1, (int)(Hv * Dv)});
-    auto out        = mlx_lin(gated_flat, pfx + "out_proj", wm, gs);
+    auto gated_flat = mx::reshape(gated, {1, T, (int)(Hv * Dv)});
+    auto out        = mlx_lin(gated_flat, pfx + "out_proj", wm, gs);  // [1, T, hidden]
 
     return {out, new_conv, h_new};
 }
@@ -269,15 +300,20 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
                              std::to_string(layer_idx) + ".mlp.";
     const std::string sw  = pfx + "switch_mlp.";
 
+    // Full softmax on all experts first (matches mlx-lm norm_topk_prob=true path)
     auto gate_logits = mlx_lin(x, pfx + "gate", wm, gs);
     auto logits_1d   = mx::reshape(gate_logits, {(int)num_experts});
+    auto gates_soft  = mx::softmax(mx::astype(logits_1d, mx::float32), -1);
 
-    auto sorted_idx  = mx::argsort(mx::negative(logits_1d), 0);
-    auto range_arr   = mx::arange(0, (int)top_k, 1, mx::int32);
-    auto topk_idx    = mx::take(sorted_idx, range_arr, 0);
+    // O(n) top-k via argpartition — kth = n - k ensures top-k lands in [kth:]
+    int   kth       = (int)num_experts - (int)top_k;
+    auto  part_idx  = mx::argpartition(gates_soft, kth, 0);           // {num_experts} uint32
+    auto  tail_rng  = mx::arange(kth, (int)num_experts, 1, mx::int32);
+    auto  topk_idx  = mx::astype(mx::take(part_idx, tail_rng, 0),     // {top_k} int32
+                                  mx::int32);
 
-    auto topk_logits = mx::take(logits_1d, topk_idx, 0);
-    auto scores      = mx::reshape(mx::softmax(topk_logits, -1), {1, (int)top_k});
+    auto topk_gates  = mx::take(gates_soft, topk_idx, 0);             // {top_k}
+    auto norm_scores = topk_gates / mx::sum(topk_gates);              // {top_k}
 
     const mx::array& gw3 = wm.at(sw + "gate_proj.weight");
     const mx::array& gs3 = wm.at(sw + "gate_proj.scales");
@@ -286,60 +322,34 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
     const mx::array& dw3 = wm.at(sw + "down_proj.weight");
     const mx::array& ds3 = wm.at(sw + "down_proj.scales");
 
-    int bits = mlx_bits(gw3, gs3, gs);
-    const size_t k        = top_k;
-    const size_t out_e    = gw3.shape()[1];
-    const size_t in_p     = gw3.shape()[2];
-    const size_t gss      = gs3.shape()[2];
-    const size_t down_out = dw3.shape()[1];
-    const size_t dss      = ds3.shape()[2];
+    auto gb3_it = wm.find(sw + "gate_proj.biases");
+    auto ub3_it = wm.find(sw + "up_proj.biases");
+    auto db3_it = wm.find(sw + "down_proj.biases");
+    std::optional<mx::array> gb3 = (gb3_it != wm.end()) ? std::optional(gb3_it->second) : std::nullopt;
+    std::optional<mx::array> ub3 = (ub3_it != wm.end()) ? std::optional(ub3_it->second) : std::nullopt;
+    std::optional<mx::array> db3 = (db3_it != wm.end()) ? std::optional(db3_it->second) : std::nullopt;
 
-    auto gw_k = mx::take(gw3, topk_idx, 0);
-    auto gs_k = mx::take(gs3, topk_idx, 0);
-    auto uw_k = mx::take(uw3, topk_idx, 0);
-    auto us_k = mx::take(us3, topk_idx, 0);
-    auto dw_k = mx::take(dw3, topk_idx, 0);
-    auto ds_k = mx::take(ds3, topk_idx, 0);
+    int bits      = mlx_bits(gw3, gs3, gs);
+    int down_bits = mlx_bits(dw3, ds3, gs);
 
-    auto gw2 = mx::reshape(gw_k, {(int)(k*out_e), (int)in_p});
-    auto gs2 = mx::reshape(gs_k, {(int)(k*out_e), (int)gss});
-    auto uw2 = mx::reshape(uw_k, {(int)(k*out_e), (int)in_p});
-    auto us2 = mx::reshape(us_k, {(int)(k*out_e), (int)gss});
+    // Fused gather + quantized matmul: 3 dispatches instead of 6×take + 3×qmatmul.
+    // rhs_indices selects expert topk_idx[i] for each output row i.
+    // Output shape: {top_k} + x.shape[:-1] + {out_features} = {top_k, 1, moe_inter}
+    auto gate_k = mx::gather_qmm(x, gw3, gs3, gb3,
+                                  std::nullopt, topk_idx, true, gs, bits);
+    auto up_k   = mx::gather_qmm(x, uw3, us3, ub3,
+                                  std::nullopt, topk_idx, true, gs, bits);
+    auto h_k    = mx::sigmoid(gate_k) * gate_k * up_k;  // {top_k, 1, moe_inter}
 
-    std::optional<mx::array> gb2, ub2;
-    {
-        auto gb_it = wm.find(sw + "gate_proj.biases");
-        if (gb_it != wm.end()) {
-            auto gb_k = mx::take(gb_it->second, topk_idx, 0);
-            gb2 = mx::reshape(gb_k, {(int)(k*out_e), (int)gb_it->second.shape()[2]});
-        }
-    }
-    {
-        auto ub_it = wm.find(sw + "up_proj.biases");
-        if (ub_it != wm.end()) {
-            auto ub_k = mx::take(ub_it->second, topk_idx, 0);
-            ub2 = mx::reshape(ub_k, {(int)(k*out_e), (int)ub_it->second.shape()[2]});
-        }
-    }
+    // Down: {top_k, 1, moe_inter} → {top_k, 1, hidden}
+    auto down_k = mx::gather_qmm(h_k, dw3, ds3, db3,
+                                  std::nullopt, topk_idx, true, gs, down_bits);
 
-    auto gate_k  = mx::quantized_matmul(x, gw2, gs2, gb2, true, gs, bits, "affine");
-    auto up_k    = mx::quantized_matmul(x, uw2, us2, ub2, true, gs, bits, "affine");
-    auto gate_ke = mx::reshape(gate_k, {(int)k, (int)out_e});
-    auto up_ke   = mx::reshape(up_k,   {(int)k, (int)out_e});
-    auto h_ke    = mx::sigmoid(gate_ke) * gate_ke * up_ke;
+    // Weighted sum over experts → {1, hidden}
+    auto scores_w   = mx::reshape(mx::astype(norm_scores, mx::bfloat16), {(int)top_k, 1, 1});
+    auto switch_out = mx::reshape(mx::sum(down_k * scores_w, 0), {1, (int)x.shape(1)});
 
-    std::optional<mx::array> db_k;
-    {
-        auto db_it = wm.find(sw + "down_proj.biases");
-        if (db_it != wm.end())
-            db_k = mx::take(db_it->second, topk_idx, 0);
-    }
-    int d_bits   = mlx_bits(dw_k, ds_k, gs);
-    auto h_k3    = mx::reshape(h_ke, {(int)k, 1, (int)out_e});
-    auto down_k3 = mx::quantized_matmul(h_k3, dw_k, ds_k, db_k, true, gs, d_bits, "affine");
-    auto down_2d = mx::reshape(down_k3, {(int)k, (int)down_out});
-    auto switch_out = mx::matmul(scores, down_2d);
-
+    // Shared expert
     auto se_g    = mlx_lin(x, pfx + "shared_expert.gate_proj", wm, gs);
     auto se_u    = mlx_lin(x, pfx + "shared_expert.up_proj",   wm, gs);
     auto se_h    = mx::sigmoid(se_g) * se_g * se_u;
@@ -434,16 +444,14 @@ void Qwen3MoeModelMLX::init_empty_decode_state() {
     const size_t nkv = config_.num_key_value_heads;
     const size_t hd  = config_.effective_head_dim();
 
-    static constexpr int kKvChunk = 64;
-
     for (int i = 0; i < n; ++i) {
         bool is_ssm = (i + 1) % 4 != 0;
         if (is_ssm) {
             st.ssm_conv.push_back(mx::zeros({(int)(ks-1), (int)cd},      mx::float32));
             st.ssm_rec.push_back( mx::zeros({(int)Hv, (int)Dv, (int)Dk}, mx::float32));
         } else {
-            st.kv_keys.push_back(mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16));
-            st.kv_vals.push_back(mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16));
+            st.kv_keys.push_back(mx::zeros({(int)nkv, 0, (int)hd}, mx::bfloat16));
+            st.kv_vals.push_back(mx::zeros({(int)nkv, 0, (int)hd}, mx::bfloat16));
         }
     }
 }
@@ -501,7 +509,8 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         }
         const mx::array& pos = inputs[1 + 2*n_full + 2*n_ssm];
 
-        mx::array hidden_arr = mx::reshape(mx::take(em, token_id, 0), {1, (int)hidden});
+        // [1, 1, hidden] throughout so mlx_ssm_step / mlx_full_attn_step see 3-D input.
+        mx::array hidden_arr = mx::reshape(mx::take(em, token_id, 0), {1, 1, (int)hidden});
 
         std::vector<mx::array> out_kv_k, out_kv_v, out_ssm_conv, out_ssm_rec;
         out_kv_k.reserve(n_full);    out_kv_v.reserve(n_full);
@@ -524,7 +533,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
                     out_ssm_conv.push_back(nc);
                     out_ssm_rec.push_back(nr);
                     ++li;
-                    return y;
+                    return y;  // [1, 1, hidden]
                 } else {
                     auto [y, nk, nv] = mlx_full_attn_step(
                         normed, i, kv_k[fi], kv_v[fi], pos,
@@ -533,7 +542,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
                     out_kv_k.push_back(nk);
                     out_kv_v.push_back(nv);
                     ++fi;
-                    return y;
+                    return y;  // [1, 1, hidden]
                 }
             }();
 
@@ -541,10 +550,13 @@ void Qwen3MoeModelMLX::build_decode_fn() {
 
             auto normed2 = mx::fast::rms_norm(
                 hidden_arr, wm.at(lpfx + "post_attention_layernorm.weight"), rms_eps);
-            hidden_arr = hidden_arr + mlx_moe_mlp_step(
-                normed2, i, wm, gs, num_experts, top_k);
+            // MoE expects [1, hidden]; result is reshaped back to [1, 1, hidden].
+            auto moe_in  = mx::reshape(normed2,    {1, (int)hidden});
+            auto moe_out = mlx_moe_mlp_step(moe_in, i, wm, gs, num_experts, top_k);
+            hidden_arr   = hidden_arr + mx::reshape(moe_out, {1, 1, (int)hidden});
         }
 
+        hidden_arr = mx::reshape(hidden_arr, {1, (int)hidden});
         hidden_arr = mx::fast::rms_norm(
             hidden_arr, wm.at("language_model.model.norm.weight"), rms_eps);
         hidden_arr = mlx_lin(hidden_arr, "language_model.lm_head", wm, gs);
@@ -567,7 +579,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         return outputs;
     };
 
-    mlx_state_->compiled_fn = mx::compile(std::move(fn));
+    mlx_state_->compiled_fn = std::move(fn);
     mlx_state_->fn_ready    = true;
 }
 
@@ -577,25 +589,6 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
     auto& st = *mlx_state_;
     const int n_full = (int)st.kv_keys.size();
     const int n_ssm  = (int)st.ssm_conv.size();
-
-    // Expand KV by one chunk when the current allocation is full.
-    // This triggers a compile() retrace for the new kv_len, then reuses that
-    // specialized graph for the next kKvChunk decode steps.
-    static constexpr int kKvChunk = 64;
-    if (!st.kv_keys.empty()) {
-        const int kv_len = (int)st.kv_keys[0].shape()[1];
-        if ((int)cache_position_ >= kv_len) {
-            const size_t nkv = config_.num_key_value_heads;
-            const size_t hd  = config_.effective_head_dim();
-            auto zeros = mx::zeros({(int)nkv, kKvChunk, (int)hd}, mx::bfloat16);
-            for (int fi = 0; fi < n_full; ++fi) {
-                st.kv_keys[fi] = mx::concatenate({st.kv_keys[fi], zeros}, 1);
-                st.kv_vals[fi] = mx::concatenate({st.kv_vals[fi], zeros}, 1);
-            }
-            mx::eval(st.kv_keys);
-            mx::eval(st.kv_vals);
-        }
-    }
 
     std::vector<mx::array> inputs;
     inputs.reserve(1 + 2*n_full + 2*n_ssm + 1);
@@ -638,6 +631,115 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_decode_step(int token_id) {
     return result;
 }
 
+// ── Batched prefill ───────────────────────────────────────────────────────────
+// Runs all T prompt tokens in one eager pass:
+//   SSM:  1 Metal dispatch per layer  (T-loop inside kernel)
+//   Attn: 1 SDPA over all T positions per layer
+//   MoE:  T per-token calls (router is data-dependent)
+Result<std::vector<float>> Qwen3MoeModelMLX::run_prefill(const std::vector<int>& prompt_ids) {
+    auto& st = *mlx_state_;
+
+    const int    n_layers    = (int)config_.num_hidden_layers;
+    const size_t n_heads     = config_.num_attention_heads;
+    const size_t n_kv        = config_.num_key_value_heads;
+    const size_t head_dim    = config_.effective_head_dim();
+    const size_t hidden      = config_.hidden_size;
+    const size_t vocab_size  = config_.vocab_size;
+    const float  rms_eps     = config_.rms_norm_eps;
+    const float  rope_theta  = config_.rope_theta;
+    const int    rope_dims   = (int)(head_dim * config_.partial_rotary_factor.value_or(0.25f));
+    const int    gs          = config_.quantization ? config_.quantization->group_size : 64;
+    const size_t num_experts = config_.num_experts.value_or(256);
+    const size_t top_k       = config_.num_experts_per_tok.value_or(8);
+    const size_t Hv = config_.linear_num_value_heads.value_or(32);
+    const size_t Dv = config_.linear_value_head_dim.value_or(128);
+    const size_t Hk = config_.linear_num_key_heads.value_or(Hv);
+    const size_t Dk = config_.linear_key_head_dim.value_or(128);
+    const size_t ks = config_.linear_conv_kernel_dim.value_or(4);
+    const size_t cd = Hk*Dk*2 + Hv*Dv;
+
+    int T = (int)prompt_ids.size();
+    std::vector<int32_t> ids32(prompt_ids.begin(), prompt_ids.end());
+    mx::array token_ids(ids32.data(), {T}, mx::int32);
+
+    mx::array hidden_arr = mx::reshape(mx::take(embed_mat_, token_ids, 0), {1, T, (int)hidden});
+    // rope offset = starting position; MLX rope auto-increments over the T sequence dim.
+    int32_t start_pos = 0;
+    mx::array pos_seq = mx::array(&start_pos, {1}, mx::int32);
+
+    int fi = 0, li = 0;
+    for (int i = 0; i < n_layers; ++i) {
+        const std::string lpfx = "language_model.model.layers." + std::to_string(i) + ".";
+        bool is_ssm = (i + 1) % 4 != 0;
+
+        auto normed = mx::fast::rms_norm(
+            hidden_arr, mlx_weights_.at(lpfx + "input_layernorm.weight"), rms_eps);
+
+        if (is_ssm) {
+            auto [y, nc, nr] = mlx_ssm_step(
+                normed, i, st.ssm_conv[li], st.ssm_rec[li],
+                mlx_weights_, gs, Hv, Dv, Hk, Dk, ks, cd, rms_eps);
+            st.ssm_conv[li] = std::move(nc);
+            st.ssm_rec[li]  = std::move(nr);
+            ++li;
+            hidden_arr = hidden_arr + y;
+        } else {
+            auto [y, nk, nv] = mlx_full_attn_step(
+                normed, i, st.kv_keys[fi], st.kv_vals[fi], pos_seq,
+                mlx_weights_, gs, n_heads, n_kv, head_dim,
+                rope_theta, rope_dims, rms_eps);
+            st.kv_keys[fi] = std::move(nk);
+            st.kv_vals[fi] = std::move(nv);
+            ++fi;
+            hidden_arr = hidden_arr + y;
+        }
+
+        auto normed2    = mx::fast::rms_norm(
+            hidden_arr, mlx_weights_.at(lpfx + "post_attention_layernorm.weight"), rms_eps);
+        auto normed2_2d = mx::reshape(normed2, {T, (int)hidden});
+
+        std::vector<mx::array> moe_outs;
+        moe_outs.reserve(T);
+        for (int t = 0; t < T; ++t) {
+            auto xt = mx::reshape(
+                mx::slice(normed2_2d, {t, 0}, {t+1, (int)hidden}), {1, (int)hidden});
+            moe_outs.push_back(mlx_moe_mlp_step(xt, i, mlx_weights_, gs, num_experts, top_k));
+        }
+        hidden_arr = hidden_arr +
+                     mx::reshape(mx::concatenate(moe_outs, 0), {1, T, (int)hidden});
+
+        // Flush lazy graph each layer to bound peak memory for long prompts.
+        {
+            std::vector<mx::array> to_eval;
+            to_eval.insert(to_eval.end(), st.ssm_conv.begin(), st.ssm_conv.end());
+            to_eval.insert(to_eval.end(), st.ssm_rec.begin(),  st.ssm_rec.end());
+            to_eval.insert(to_eval.end(), st.kv_keys.begin(),  st.kv_keys.end());
+            to_eval.insert(to_eval.end(), st.kv_vals.begin(),  st.kv_vals.end());
+            to_eval.push_back(hidden_arr);
+            mx::eval(to_eval);
+        }
+    }
+
+    // Final norm + lm_head on last token only
+    auto last_2d = mx::reshape(
+        mx::slice(mx::reshape(hidden_arr, {T, (int)hidden}), {T-1, 0}, {T, (int)hidden}),
+        {1, (int)hidden});
+    last_2d = mx::fast::rms_norm(
+        last_2d, mlx_weights_.at("language_model.model.norm.weight"), rms_eps);
+    auto logits = mx::astype(
+        mx::reshape(mlx_lin(last_2d, "language_model.lm_head", mlx_weights_, gs),
+                    {(int)vocab_size}),
+        mx::float32);
+    mx::eval(logits);
+
+    cache_position_ = T;
+    build_decode_fn();
+
+    std::vector<float> result(vocab_size);
+    std::copy(logits.data<float>(), logits.data<float>() + vocab_size, result.data());
+    return result;
+}
+
 // ── LanguageModel interface ───────────────────────────────────────────────────
 
 Result<std::vector<float>> Qwen3MoeModelMLX::prefill(const std::vector<int>& prompt_ids) {
@@ -646,16 +748,7 @@ Result<std::vector<float>> Qwen3MoeModelMLX::prefill(const std::vector<int>& pro
 
     reset_cache();
     init_empty_decode_state();
-    build_decode_fn();
-
-    // Run T sequential decode steps — correct but O(T); parallel prefill is a future opt.
-    std::vector<float> last_logits;
-    for (int token_id : prompt_ids) {
-        auto r = run_decode_step(token_id);
-        if (!r) return std::unexpected(r.error());
-        last_logits = std::move(*r);
-    }
-    return last_logits;
+    return run_prefill(prompt_ids);
 }
 
 Result<std::vector<float>> Qwen3MoeModelMLX::decode(int token_id) {
@@ -738,7 +831,8 @@ Result<std::vector<int>> Qwen3MoeModelMLX::moe_generate_pipelined(
     int32_t fv   = (int32_t)first_token;
     auto    out0 = st.compiled_fn(build_inputs(mx::array(&fv, {1}, mx::int32),
                                                (int32_t)cache_position_));
-    auto prev_tok_lazy = mx::reshape(mx::argmax(out0[0]), {1});
+    // Cast argmax to int32 to reuse the same compile cache entry as the prefill path.
+    auto prev_tok_lazy = mx::astype(mx::reshape(mx::argmax(out0[0]), {1}), mx::int32);
     mx::async_eval(prev_tok_lazy);
 
     unpack_state(out0);
@@ -746,7 +840,7 @@ Result<std::vector<int>> Qwen3MoeModelMLX::moe_generate_pipelined(
 
     for (size_t step = 1; step + 1 < max_new_tokens; ++step) {
         auto out_n = st.compiled_fn(build_inputs(prev_tok_lazy, (int32_t)cache_position_));
-        auto curr_tok_lazy = mx::reshape(mx::argmax(out_n[0]), {1});
+        auto curr_tok_lazy = mx::astype(mx::reshape(mx::argmax(out_n[0]), {1}), mx::int32);
         mx::async_eval(curr_tok_lazy);
 
         mx::eval(prev_tok_lazy);

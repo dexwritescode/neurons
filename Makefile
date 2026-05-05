@@ -12,9 +12,11 @@ BUILD_DIR  ?= build
 BUILD_TYPE ?= Release
 JOBS       ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 
-GUI_DIR      := gui
-STAGING_DIR  := $(GUI_DIR)/macos/neurons_core_lib
-STAGED_DYLIB := $(STAGING_DIR)/lib/libneurons_core.dylib
+GUI_DIR        := gui
+STAGING_DIR    := $(GUI_DIR)/macos/neurons_core_lib
+STAGED_DYLIB   := $(STAGING_DIR)/lib/libneurons_core.dylib
+SERVICE_BIN    := $(BUILD_DIR)/service/neurons_service
+STAGED_SERVICE := $(GUI_DIR)/macos/neurons_service_bin/bin/neurons_service
 
 CMAKE_CONFIGURE := cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 CMAKE_BUILD     := cmake --build $(BUILD_DIR) -j$(JOBS)
@@ -59,12 +61,20 @@ dylib: _configure ## Build + stage libneurons_core.dylib for Flutter FFI
 	    fi; \
 	done
 
+.PHONY: stage-service
+stage-service: _configure ## Build + stage neurons_service for Xcode bundle copy phase
+	$(CMAKE_BUILD) --target neurons_service
+	@mkdir -p $(dir $(STAGED_SERVICE))
+	@cp $(SERVICE_BIN) $(STAGED_SERVICE)
+	@chmod +x $(STAGED_SERVICE)
+	@echo "==> Staged neurons_service to $(STAGED_SERVICE)"
+
 .PHONY: gui
-gui: dylib ## Build dylib then Flutter macOS app
+gui: dylib stage-service ## Build dylib + service, then Flutter macOS app
 	cd $(GUI_DIR) && flutter build macos
 
 .PHONY: run
-run: dylib ## Build dylib + launch Flutter app in debug mode
+run: dylib stage-service ## Build dylib + service, then launch Flutter app in debug mode
 	cd $(GUI_DIR) && flutter run -d macos
 
 # ── Testing ──────────────────────────────────────────────────────────────────

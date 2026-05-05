@@ -18,8 +18,8 @@ namespace compute {
  * dependency — enabling mx::compile to fuse the decode step into a single compiled
  * function (target: ≥50 tok/s on M2 Ultra for Qwen3.6-35B-A3B-4bit).
  *
- * Prefill runs T sequential single-token decode steps (correct, ~O(T) cost).
- * A parallel-scan prefill path is a future optimisation.
+ * Prefill runs all T prompt tokens in one eager pass: one Metal dispatch per SSM layer
+ * (T-loop inside kernel), one SDPA per attention layer, T per-token MoE calls.
  */
 class Qwen3MoeModelMLX final : public Qwen3MoeModelBase, public LanguageModel {
 public:
@@ -66,6 +66,7 @@ private:
     void init_empty_decode_state();
     void build_decode_fn();
     Result<std::vector<float>> run_decode_step(int token_id);
+    Result<std::vector<float>> run_prefill(const std::vector<int>& prompt_ids);
     Result<std::vector<int>>   moe_generate_pipelined(
         const std::vector<int>& input_ids,
         size_t max_new_tokens,
