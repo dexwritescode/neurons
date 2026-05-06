@@ -7,37 +7,54 @@
 
 namespace {
 
-// Shared backend for all Gemma integration tests.
-// Initialized once per test suite to avoid repeated MLX setup.
 class GemmaIntegrationTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
+        model_path_ = std::filesystem::path(std::getenv("HOME"))
+            / ".neurons/models/mlx-community/gemma-3-1b-it-qat-4bit";
+
         auto b = compute::BackendFactory::create(compute::BackendType::MLX);
-        if (!b) { backend_ = nullptr; return; }
+        if (!b) { skip_reason_ = b.error().message; return; }
         backend_ = std::move(*b);
-        backend_->initialize();
+        if (!backend_->initialize()) { skip_reason_ = "Backend init failed"; return; }
+
+        if (!std::filesystem::exists(model_path_)) {
+            skip_reason_ = "Gemma-3-1b-it-qat-4bit not downloaded";
+            return;
+        }
+
+        auto m = compute::LanguageModel::load(model_path_, backend_.get());
+        if (!m) { skip_reason_ = m.error().message; return; }
+        model_ = std::move(*m);
     }
 
     static void TearDownTestSuite() {
+        model_.reset();
         if (backend_) backend_->cleanup();
         backend_.reset();
+        skip_reason_.clear();
     }
 
+    void SetUp() override {
+        if (!skip_reason_.empty())
+            GTEST_SKIP() << skip_reason_;
+    }
+
+    static std::filesystem::path                    model_path_;
+    static std::string                              skip_reason_;
     static std::unique_ptr<compute::ComputeBackend> backend_;
+    static std::unique_ptr<compute::LanguageModel>  model_;
 };
 
-std::unique_ptr<compute::ComputeBackend> GemmaIntegrationTest::backend_ = nullptr;
+std::filesystem::path                    GemmaIntegrationTest::model_path_;
+std::string                              GemmaIntegrationTest::skip_reason_;
+std::unique_ptr<compute::ComputeBackend> GemmaIntegrationTest::backend_;
+std::unique_ptr<compute::LanguageModel>  GemmaIntegrationTest::model_;
 
 // ── Config parsing ────────────────────────────────────────────────────────────
 
 TEST_F(GemmaIntegrationTest, ConfigParsesGemmaFields) {
-    const auto model_path = std::filesystem::path(std::getenv("HOME"))
-        / ".neurons/models/mlx-community/gemma-3-1b-it-qat-4bit";
-    if (!std::filesystem::exists(model_path)) {
-        GTEST_SKIP() << "Gemma-3-1b-it-qat-4bit not downloaded";
-    }
-
-    auto config = compute::ModelConfig::from_config_file(model_path / "config.json");
+    auto config = compute::ModelConfig::from_config_file(model_path_ / "config.json");
     ASSERT_TRUE(config.has_value()) << config.error().message;
 
     EXPECT_EQ(config->model_type, "gemma3_text");
@@ -45,7 +62,6 @@ TEST_F(GemmaIntegrationTest, ConfigParsesGemmaFields) {
     EXPECT_TRUE(config->is_supported_architecture());
     EXPECT_TRUE(config->is_valid());
 
-    // Gemma3-specific fields
     ASSERT_TRUE(config->head_dim.has_value());
     EXPECT_EQ(*config->head_dim, 256u);
 
@@ -61,16 +77,14 @@ TEST_F(GemmaIntegrationTest, ConfigParsesGemmaFields) {
     ASSERT_TRUE(config->rope_local_base_freq.has_value());
     EXPECT_FLOAT_EQ(*config->rope_local_base_freq, 10000.0f);
 
-    // Layer classification (pattern=6: global at indices 5,11,17,23)
     EXPECT_TRUE(config->is_local_layer(0));
     EXPECT_TRUE(config->is_local_layer(4));
-    EXPECT_FALSE(config->is_local_layer(5));  // global
+    EXPECT_FALSE(config->is_local_layer(5));
     EXPECT_TRUE(config->is_local_layer(6));
-    EXPECT_FALSE(config->is_local_layer(11)); // global
+    EXPECT_FALSE(config->is_local_layer(11));
 
-    // Computed helpers
     EXPECT_EQ(config->effective_head_dim(), 256u);
-    EXPECT_FLOAT_EQ(config->effective_attention_scale(), 1.0f / 16.0f); // 1/sqrt(256)
+    EXPECT_FLOAT_EQ(config->effective_attention_scale(), 1.0f / 16.0f);
 
     EXPECT_EQ(config->hidden_size, 1152u);
     EXPECT_EQ(config->num_hidden_layers, 26u);
@@ -79,41 +93,28 @@ TEST_F(GemmaIntegrationTest, ConfigParsesGemmaFields) {
     EXPECT_EQ(config->vocab_size, 262144u);
     EXPECT_FALSE(config->tie_word_embeddings);
 
-    // hidden_activation mapped to hidden_act
     EXPECT_EQ(config->hidden_act, "gelu_pytorch_tanh");
 }
 
 // ── End-to-end generation ─────────────────────────────────────────────────────
 
 TEST_F(GemmaIntegrationTest, GenerateCapitalOfFrance) {
-    if (!backend_) GTEST_SKIP() << "MLX backend not available";
+    EXPECT_EQ(model_->model_type(), "gemma3_text");
 
-    const auto model_path = std::filesystem::path(std::getenv("HOME"))
-        / ".neurons/models/mlx-community/gemma-3-1b-it-qat-4bit";
-    if (!std::filesystem::exists(model_path)) {
-        GTEST_SKIP() << "Gemma-3-1b-it-qat-4bit not downloaded";
-    }
-
-    auto model = compute::LanguageModel::load(model_path, backend_.get());
-    ASSERT_TRUE(model.has_value()) << model.error().message;
-
-    EXPECT_EQ((*model)->model_type(), "gemma3_text");
-
-    // Gemma3 chat template: BOS added by tokenizer (add_special_tokens=true)
     const std::string prompt =
         "<start_of_turn>user\n"
         "What is the capital of France?<end_of_turn>\n"
         "<start_of_turn>model\n";
 
-    auto ids = (*model)->tokenizer().encode(prompt, /*add_special_tokens=*/true);
+    auto ids = model_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
     ASSERT_FALSE(ids.empty());
 
     std::string output;
     compute::SamplingParams params;
-    params.temperature = 0.0f;  // greedy
+    params.temperature = 0.0f;
 
-    auto tokens = (*model)->generate(ids, 64, params, [&](int tok) {
-        output += (*model)->tokenizer().decode({tok});
+    auto tokens = model_->generate(ids, 64, params, [&](int tok) {
+        output += model_->tokenizer().decode({tok});
         return true;
     });
     ASSERT_TRUE(tokens.has_value()) << tokens.error().message;

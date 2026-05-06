@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <unordered_set>
 #include <random>
 #include <unordered_set>
 
@@ -97,6 +98,48 @@ int Sampler::sample(
     std::mt19937 rng(rd());
     std::discrete_distribution<int> dist(probs.begin(), probs.end());
     return dist(rng);
+}
+
+// ── GenerateHelper ────────────────────────────────────────────────────────────
+
+Result<std::vector<int>> GenerateHelper::run(
+    const std::vector<int>&  input_ids,
+    size_t                   max_new_tokens,
+    SamplingParams           params,
+    std::function<bool(int)> on_token,
+    const ModelConfig&       config,
+    PrefillFn                prefill,
+    DecodeFn                 decode)
+{
+    if (input_ids.empty())
+        return std::unexpected(Error{ErrorCode::InvalidInput, "input_ids cannot be empty"});
+
+    std::unordered_set<int> eos_set;
+    if (config.eos_token_ids.has_value()) {
+        for (int id : *config.eos_token_ids) eos_set.insert(id);
+    } else {
+        eos_set.insert(2);
+    }
+
+    std::vector<int> generated;
+    generated.reserve(max_new_tokens);
+
+    auto logits = prefill(input_ids);
+    if (!logits) return std::unexpected(logits.error());
+
+    for (size_t step = 0; step < max_new_tokens; ++step) {
+        int next_token = Sampler::sample(*logits, params, generated);
+        generated.push_back(next_token);
+
+        if (on_token && !on_token(next_token)) break;
+        if (eos_set.count(next_token)) break;
+        if (step + 1 == max_new_tokens) break;
+
+        logits = decode(next_token);
+        if (!logits) return std::unexpected(logits.error());
+    }
+
+    return generated;
 }
 
 } // namespace compute

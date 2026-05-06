@@ -92,3 +92,10 @@ models/build/
 !docs/**/*.md
 .idea/
 cmake-build-debug/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/
+.beads/

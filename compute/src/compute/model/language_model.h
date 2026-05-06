@@ -36,28 +36,16 @@ public:
     LanguageModel(LanguageModel&&)                 = default;
     LanguageModel& operator=(LanguageModel&&)      = default;
 
-    // ── KV-cache inference (subclass responsibility) ─────────────────────────
-
-    // Run full prompt, populate KV cache, return last-token logits.
-    // Resets any existing cache before running.
-    virtual Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids) = 0;
-
-    // Process one new token using the populated KV cache.
-    // Must call prefill() first.
-    virtual Result<std::vector<float>> decode(int token_id) = 0;
-
-    // Clear KV cache (call before starting a new conversation).
-    virtual void reset_cache() = 0;
-
-    // ── Generation (shared default: prefill → loop(sample → decode)) ─────────
+    // ── Generation ───────────────────────────────────────────────────────────
     //
     // on_token: called with each sampled token id. Return false to stop early.
-    // Subclasses may override for architecture-specific generation strategies.
+    // Each subclass implements its own loop; greedy paths use GPU pipelining
+    // where available, sampling paths delegate to GenerateHelper::run().
     virtual Result<std::vector<int>> generate(
         const std::vector<int>&  input_ids,
         size_t                   max_new_tokens = 4096,
         SamplingParams           params         = {},
-        std::function<bool(int)> on_token       = nullptr);
+        std::function<bool(int)> on_token       = nullptr) = 0;
 
     // True when the model emits <think>...</think> reasoning blocks before its answer.
     // Detected by probing the tokenizer vocabulary for the <think> token.
@@ -70,7 +58,6 @@ public:
     virtual const ModelConfig&        config()         const = 0;
     virtual const std::string&        model_type()     const = 0;
     virtual const SimpleBpeTokenizer& tokenizer()      const = 0;
-    virtual ComputeBackend*           backend()        const = 0;
     virtual size_t                    num_parameters() const = 0;
 
     // ── Tool-use capability ───────────────────────────────────────────────────
@@ -109,7 +96,8 @@ public:
     // Returns an error for unsupported model_type values.
     static Result<std::unique_ptr<LanguageModel>> load(
         const std::filesystem::path& model_dir,
-        ComputeBackend*              backend);
+        ComputeBackend*              backend,
+        size_t                       context_size = 0);
 
 protected:
     LanguageModel() = default;

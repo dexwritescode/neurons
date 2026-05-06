@@ -580,7 +580,9 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     compute::SamplingParams params;
     if (req.has_params()) {
         const auto& p = req.params();
-        params.temperature = p.temperature() > 0.0f ? p.temperature() : 0.7f;
+        // Trust temperature as-is: 0.0 means greedy (pipelined path), >0 means sampling.
+        // proto3 float defaults to 0.0, so callers that want sampling must set it explicitly.
+        params.temperature = p.temperature();
         params.top_p       = p.top_p()       > 0.0f ? p.top_p()       : 0.9f;
         params.top_k       = p.top_k()       > 0    ? p.top_k()       : 40;
         params.rep_penalty = p.rep_penalty()  > 0.0f ? p.rep_penalty() : 1.1f;

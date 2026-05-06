@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <span>
 
 namespace compute {
 
@@ -15,9 +16,7 @@ GemmaModel::GemmaModel(
     SimpleBpeTokenizer                      tokenizer,
     std::unordered_map<std::string, Tensor> weights,
     ComputeBackend*                         backend)
-    : config_(std::move(config))
-    , tokenizer_(std::move(tokenizer))
-    , weights_(std::move(weights))
+    : GemmaModelBase(std::move(config), std::move(tokenizer), std::move(weights))
     , backend_(backend)
 {}
 
@@ -89,16 +88,6 @@ Result<GemmaModel> GemmaModel::from_model_dir(
         std::move(*tokenizer_result),
         std::move(weights),
         backend);
-}
-
-// ── Weight lookup ─────────────────────────────────────────────────────────────
-
-Result<Tensor> GemmaModel::get_weight(const std::string& name) const {
-    auto it = weights_.find(name);
-    if (it == weights_.end()) {
-        return std::unexpected(Error{ErrorCode::TensorNotFound, "Weight not found: " + name});
-    }
-    return it->second;
 }
 
 // ── Linear projection (quantized or unquantized) ─────────────────────────────
@@ -463,7 +452,21 @@ Result<std::vector<float>> GemmaModel::forward_impl(
     return result;
 }
 
-// ── KV-cache public API ───────────────────────────────────────────────────────
+// ── LanguageModel interface ───────────────────────────────────────────────────
+
+Result<std::vector<int>> GemmaModel::generate(
+    const std::vector<int>&  input_ids,
+    size_t                   max_new_tokens,
+    SamplingParams           params,
+    std::function<bool(int)> on_token)
+{
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
+}
+
+// ── KV-cache steps ────────────────────────────────────────────────────────────
 
 void GemmaModel::reset_cache() {
     kv_cache_.clear();
@@ -489,15 +492,6 @@ Result<std::vector<float>> GemmaModel::decode(int token_id) {
     auto result = forward_impl({token_id}, static_cast<int>(cache_position_), &kv_cache_);
     if (result) ++cache_position_;
     return result;
-}
-
-// ── Metadata ──────────────────────────────────────────────────────────────────
-
-size_t GemmaModel::num_parameters() const {
-    size_t total = 0;
-    for (const auto& [name, tensor] : weights_)
-        total += tensor.size();
-    return total;
 }
 
 } // namespace compute

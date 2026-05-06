@@ -3,54 +3,13 @@
 #include "gemma_model.h"
 #include "qwen3_moe_model.h"
 #include "model_loader.h"
-#include "sampler.h"
-#include <unordered_set>
+
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+#include "qwen3_moe_model_mlx.h"
+#include "gemma_model_mlx.h"
+#endif
 
 namespace compute {
-
-// ── Default generate() ───────────────────────────────────────────────────────
-//
-// Shared across all model families. Subclasses override prefill() and decode().
-// The rep_penalty window is limited to generated tokens only — not the prompt.
-
-Result<std::vector<int>> LanguageModel::generate(
-    const std::vector<int>&  input_ids,
-    size_t                   max_new_tokens,
-    SamplingParams           params,
-    std::function<bool(int)> on_token)
-{
-    if (input_ids.empty()) {
-        return std::unexpected(Error{ErrorCode::InvalidInput, "input_ids cannot be empty"});
-    }
-
-    // Build EOS set for O(1) lookup — Llama-3 has multiple EOS token IDs.
-    std::unordered_set<int> eos_set;
-    if (config().eos_token_ids.has_value()) {
-        for (int id : *config().eos_token_ids) eos_set.insert(id);
-    } else {
-        eos_set.insert(2);
-    }
-
-    std::vector<int> generated;
-    generated.reserve(max_new_tokens);
-
-    auto logits = prefill(input_ids);
-    if (!logits) return std::unexpected(logits.error());
-
-    for (size_t step = 0; step < max_new_tokens; ++step) {
-        int next_token = Sampler::sample(*logits, params, generated);
-        generated.push_back(next_token);
-
-        if (on_token && !on_token(next_token)) break;
-        if (eos_set.count(next_token)) break;
-        if (step + 1 == max_new_tokens) break;
-
-        logits = decode(next_token);
-        if (!logits) return std::unexpected(logits.error());
-    }
-
-    return generated;
-}
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 //
@@ -59,7 +18,8 @@ Result<std::vector<int>> LanguageModel::generate(
 
 Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
     const std::filesystem::path& model_dir,
-    ComputeBackend*              backend)
+    ComputeBackend*              backend,
+    size_t                       context_size)
 {
     // Peek at config to determine the model family without loading weights twice.
     auto config_result = ModelLoader::load_config(model_dir);
@@ -69,26 +29,38 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     if (model_type == "llama" || model_type == "mistral" ||
         model_type == "qwen2" || model_type == "qwen3") {
-        auto result = LlamaModel::from_model_dir(model_dir, backend);
+        auto result = LlamaModel::from_model_dir(model_dir, backend, context_size);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<LlamaModel>(std::move(*result));
     }
 
     if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text") {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+        auto result = GemmaModelMLX::from_model_dir(model_dir);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<GemmaModelMLX>(std::move(*result));
+#else
         auto result = GemmaModel::from_model_dir(model_dir, backend);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<GemmaModel>(std::move(*result));
+#endif
     }
 
-    if (model_type == "qwen3_5_moe") {
+    if (model_type == "qwen3_5_moe" || model_type == "qwen3_moe") {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+        auto result = Qwen3MoeModelMLX::from_model_dir(model_dir, context_size);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<Qwen3MoeModelMLX>(std::move(*result));
+#else
         auto result = Qwen3MoeModel::from_model_dir(model_dir, backend);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<Qwen3MoeModel>(std::move(*result));
+#endif
     }
 
     return std::unexpected(Error{ErrorCode::InvalidModel,
         "Unsupported model type: \"" + model_type +
-        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe"});
+        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe, qwen3_moe"});
 }
 
 } // namespace compute

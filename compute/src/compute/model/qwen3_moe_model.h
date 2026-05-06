@@ -1,8 +1,8 @@
 #pragma once
 
 #include "language_model.h"
-#include "llama_model.h"
-#include "../core/tensor.h"
+#include "qwen3_moe_model_base.h"
+#include "kv_cache.h"
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -21,7 +21,7 @@ namespace compute {
  *
  * Weight prefix: language_model.model.layers.{i}.*
  */
-class Qwen3MoeModel final : public LanguageModel {
+class Qwen3MoeModel final : public Qwen3MoeModelBase, public LanguageModel {
 public:
     static Result<Qwen3MoeModel> from_model_dir(
         const std::filesystem::path& model_dir,
@@ -29,17 +29,24 @@ public:
 
     // ── LanguageModel interface ───────────────────────────────────────────────
 
-    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids) override;
-    Result<std::vector<float>> decode(int token_id) override;
-    void reset_cache() override;
+    Result<std::vector<int>> generate(
+        const std::vector<int>&  input_ids,
+        size_t                   max_new_tokens = 4096,
+        SamplingParams           params         = {},
+        std::function<bool(int)> on_token       = nullptr) override;
 
     const ModelConfig&        config()         const override { return config_; }
     const std::string&        model_type()     const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
-    ComputeBackend*           backend()        const override { return backend_; }
-    size_t                    num_parameters() const override;
+    size_t num_parameters() const override { return Qwen3MoeModelBase::num_parameters(); }
 
 private:
+    // ── KV-cache steps (private — used by generate() only) ───────────────────
+
+    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids);
+    Result<std::vector<float>> decode(int token_id);
+    void reset_cache();
+
     // Per-SSM-layer state (GatedDeltaNet)
     struct SsmState {
         std::optional<Tensor> conv_state;  // [kernel_size-1, conv_dim]
@@ -55,12 +62,7 @@ private:
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    Result<Tensor> get_weight(const std::string& name) const;
-
     Result<Tensor> embedding(const std::vector<int>& token_ids);
-
-    // Infer quantization bits from weight/scales shape (handles 4-bit and 8-bit layers).
-    int infer_quant_bits(const Tensor& w, const Tensor& scales) const;
 
     // Linear projection: dispatches to quantized_matmul or matmul.
     // Uses infer_quant_bits so gate layers (8-bit) work correctly.
@@ -88,32 +90,13 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────────
 
-    ModelConfig                             config_;
-    SimpleBpeTokenizer                      tokenizer_;
-    std::unordered_map<std::string, Tensor> weights_;
-    ComputeBackend*                         backend_;
+    ComputeBackend* backend_;
 
     std::optional<Tensor>     dequantized_embed_tokens_;
     std::vector<LayerKVCache> kv_cache_;
     std::vector<SsmState>     ssm_cache_;
     size_t                    cache_position_ = 0;
 
-#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
-    // Compiled MLX decode state — built once after the first prefill, reused for all tokens.
-    struct MlxDecodeState {
-        std::vector<mx::array> kv_keys;      // one per full-attention layer (10 for 40-layer model)
-        std::vector<mx::array> kv_vals;
-        std::vector<mx::array> ssm_conv;     // one per SSM layer (30 for 40-layer model)
-        std::vector<mx::array> ssm_rec;
-        std::function<std::vector<mx::array>(const std::vector<mx::array>&)> compiled_fn;
-        bool fn_ready = false;
-    };
-
-    void initialize_mlx_state();
-    void build_mlx_compile_fn();
-
-    std::optional<MlxDecodeState> mlx_state_;
-#endif
 };
 
 } // namespace compute

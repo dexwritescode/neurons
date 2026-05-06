@@ -1,26 +1,15 @@
 #pragma once
 
 #include "language_model.h"
-#include "../core/tensor.h"
+#include "kv_cache.h"
 #include <optional>
 #include <unordered_map>
 
-namespace compute {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+#include <mlx/mlx.h>
+#endif
 
-/**
- * Per-layer KV cache for efficient autoregressive decoding.
- * Keys/values are stored post-RoPE so they can be directly concatenated
- * with new tokens during decode without re-applying positional encoding.
- *
- * Shape when valid:
- *   keys:   [n_kv_heads, seq_so_far, head_dim]
- *   values: [n_kv_heads, seq_so_far, head_dim]
- */
-struct LayerKVCache {
-    std::optional<Tensor> keys;
-    std::optional<Tensor> values;
-    bool valid = false;
-};
+namespace compute {
 
 /**
  * Concrete LanguageModel for all Llama-family and Mistral-family models.
@@ -35,19 +24,27 @@ public:
     // Factory — loads config, weights, and tokenizer from model_dir.
     static Result<LlamaModel> from_model_dir(
         const std::filesystem::path& model_dir,
-        ComputeBackend*              backend);
+        ComputeBackend*              backend,
+        size_t                       context_size = 0);
 
     // ── LanguageModel interface ───────────────────────────────────────────────
 
-    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids) override;
-    Result<std::vector<float>> decode(int token_id) override;
-    void reset_cache() override;
+    Result<std::vector<int>> generate(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens = 4096,
+        SamplingParams params = {},
+        std::function<bool(int)> on_token = nullptr) override;
 
     const ModelConfig&        config()         const override { return config_; }
     const std::string&        model_type()     const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
-    ComputeBackend*           backend()        const override { return backend_; }
     size_t                    num_parameters() const override;
+
+    // ── KV-cache step interface (public for diagnostic tests) ─────────────────
+
+    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids);
+    Result<std::vector<float>> decode(int token_id);
+    void reset_cache();
 
     // ── Tool-use (LanguageModel overrides) ───────────────────────────────────
     bool                     supports_tool_use()          const override;
@@ -118,6 +115,34 @@ private:
 
     // Cached dequantized embedding table (populated on first use for quantized models)
     mutable std::optional<Tensor>     dequantized_embed_tokens_;
+
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+    struct MlxDecodeState {
+        std::vector<mlx::core::array> kv_keys;
+        std::vector<mlx::core::array> kv_vals;
+        std::function<std::vector<mlx::core::array>(std::vector<mlx::core::array>)> compiled_fn;
+        bool fn_ready = false;
+    };
+
+    std::unordered_map<std::string, mlx::core::array> mlx_weights_;
+    mlx::core::array                                   mlx_embed_mat_;
+    std::optional<MlxDecodeState>                      mlx_state_;
+    size_t                                             context_size_ = 0;
+    size_t                                             mlx_pos_      = 0;
+
+    void mlx_setup(std::unordered_map<std::string, mlx::core::array> mlx_weights,
+                   mlx::core::array mlx_embed_mat,
+                   size_t context_size);
+    void mlx_init_state();
+    void mlx_build_decode_fn();
+    Result<std::vector<float>> mlx_prefill_batch(const std::vector<int>& prompt_ids);
+    Result<std::vector<float>> mlx_run_step(int token_id);
+    Result<std::vector<int>>   mlx_generate_pipelined(
+        const std::vector<int>& input_ids,
+        size_t max_new_tokens,
+        SamplingParams params,
+        std::function<bool(int)> on_token);
+#endif
 };
 
 } // namespace compute
