@@ -81,10 +81,6 @@ struct ModelConfig {
     std::optional<bool>   mrope_interleaved;                     // interleaved mRoPE mode
     std::optional<std::vector<int>> mrope_section;               // mRoPE section sizes [11,11,10]
 
-    // Model path info - may be optional
-    std::optional<std::string> name_or_path;
-    std::optional<std::string> transformers_version;
-
     /**
      * Parse ModelConfig from config.json file
      * @param config_path Path to config.json file

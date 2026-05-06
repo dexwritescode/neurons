@@ -50,8 +50,6 @@ endif()
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(compute_backend
     src/compute/core/compute_backend.cpp
-    src/compute/core/tensor.cpp
-    src/compute/core/graph.cpp
     src/compute/model/model_config.cpp
     src/compute/model/model_loader.cpp
     src/compute/model/tokenizer_config.cpp
@@ -60,10 +58,6 @@ add_library(compute_backend
     src/compute/model/chat_template.cpp
     src/compute/model/language_model.cpp
     src/compute/model/llama_model.cpp
-    src/compute/model/gemma_model_base.cpp
-    src/compute/model/gemma_model.cpp
-    src/compute/model/qwen3_moe_model_base.cpp
-    src/compute/model/qwen3_moe_model.cpp
     ${BACKEND_SOURCES}
 )
 
@@ -111,21 +105,11 @@ if(BUILD_TESTING)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
 
-    # Platform-specific test-only sources (backend/model sources come via compute_backend)
-    set(TEST_PLATFORM_SOURCES "")
-    if(MLX_AVAILABLE AND TARGET mlx)
-        list(APPEND TEST_PLATFORM_SOURCES
-            tests/compute/test_mlx_backend.cpp
-        )
-    endif()
-
     add_executable(compute_tests
-        tests/compute/test_symbolic_api.cpp
         tests/compute/test_model_config.cpp
         tests/compute/test_model_loader.cpp
         tests/compute/test_tokenizer_config.cpp
         tests/compute/test_simple_bpe_tokenizer.cpp
-        tests/compute/test_attention_qkv_trace.cpp
         tests/compute/test_forward_pass.cpp
         tests/compute/test_mistral_integration.cpp
         tests/compute/test_llama3_integration.cpp
@@ -134,7 +118,6 @@ if(BUILD_TESTING)
         tests/compute/test_gemma_integration.cpp
         tests/compute/test_qwen3_moe_integration.cpp
         tests/compute/test_chat_template.cpp
-        ${TEST_PLATFORM_SOURCES}
     )
 
     target_link_libraries(compute_tests PRIVATE

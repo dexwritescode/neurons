@@ -100,7 +100,8 @@ GemmaModelMLX::GemmaModelMLX(
     SimpleBpeTokenizer                                 tokenizer,
     std::unordered_map<std::string, mx::array>         mlx_weights,
     mx::array                                          embed_mat)
-    : GemmaModelBase(std::move(config), std::move(tokenizer), {})
+    : config_(std::move(config))
+    , tokenizer_(std::move(tokenizer))
     , mlx_weights_(std::move(mlx_weights))
     , embed_mat_(std::move(embed_mat))
 {}

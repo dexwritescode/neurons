@@ -140,10 +140,6 @@ grpc::Status NeuronsServiceImpl::GetStatus(grpc::ServerContext* /*ctx*/,
                 backend_name = "mlx";
                 gpu_name     = "Apple Silicon";
                 break;
-            case compute::BackendType::Metal:
-                backend_name = "metal";
-                gpu_name     = "Apple GPU";
-                break;
             default: break;
         }
     }

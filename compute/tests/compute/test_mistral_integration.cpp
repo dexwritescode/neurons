@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "compute/model/tinyllama_inference.h"
+#include "compute/model/llama_model.h"
 #include "compute/core/compute_backend.h"
 #include "test_config.h"
 #include <filesystem>
@@ -29,12 +29,12 @@ protected:
         backend_ = std::move(*backend_result);
         if (!backend_->initialize()) { skip_reason_ = "Backend init failed"; return; }
 
-        auto inf_result = TinyLlamaInference::from_model_dir(model_dir_, backend_.get());
+        auto inf_result = LlamaModel::from_model_dir(model_dir_, backend_.get());
         if (!inf_result) {
             skip_reason_ = "Failed to load Mistral: " + inf_result.error().message;
             return;
         }
-        inference_ = std::make_unique<TinyLlamaInference>(std::move(*inf_result));
+        inference_ = std::make_unique<LlamaModel>(std::move(*inf_result));
 
         std::cout << "Loaded Mistral model: " << inference_->config().model_type
                   << " hidden=" << inference_->config().hidden_size
@@ -56,13 +56,13 @@ protected:
     static std::filesystem::path              model_dir_;
     static std::string                        skip_reason_;
     static std::unique_ptr<ComputeBackend>    backend_;
-    static std::unique_ptr<TinyLlamaInference> inference_;
+    static std::unique_ptr<LlamaModel> inference_;
 };
 
 std::filesystem::path               MistralIntegrationTest::model_dir_;
 std::string                         MistralIntegrationTest::skip_reason_;
 std::unique_ptr<ComputeBackend>     MistralIntegrationTest::backend_;
-std::unique_ptr<TinyLlamaInference> MistralIntegrationTest::inference_;
+std::unique_ptr<LlamaModel> MistralIntegrationTest::inference_;
 
 // Verify the model loads with correct Mistral architecture config
 TEST_F(MistralIntegrationTest, ConfigLoadsCorrectly) {
@@ -223,46 +223,6 @@ TEST_F(MistralIntegrationTest, DiagnosticTokenLogitTrace) {
 
     std::cout << "\nC++ output: " << inference_->tokenizer().decode(generated) << "\n";
     std::cout << "================================================\n\n";
-}
-
-// Diagnostic: compare no-cache forward vs prefill+decode
-// Skipped on Apple Silicon: LlamaModel uses the MLX path which has no Tensor
-// weights_ (O.6.2), so forward() is not available.
-TEST_F(MistralIntegrationTest, DiagnosticNoCacheVsDecode) {
-    GTEST_SKIP() << "forward() not available in MLX path (O.6.2)";
-
-    const std::string prompt = "[INST] What is the capital of France? [/INST]";
-    auto token_ids = inference_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
-    ASSERT_FALSE(token_ids.empty());
-
-    const int tok_the = 1183;
-
-    std::vector<int> extended = token_ids;
-    extended.push_back(tok_the);
-    auto nc_result = inference_->forward(extended);
-    ASSERT_TRUE(nc_result.has_value()) << nc_result.error().message;
-
-    auto pf_result = inference_->prefill(token_ids);
-    ASSERT_TRUE(pf_result.has_value()) << pf_result.error().message;
-    auto dc_result = inference_->decode(tok_the);
-    ASSERT_TRUE(dc_result.has_value()) << dc_result.error().message;
-
-    auto print_top5 = [&](const std::string& label, const std::vector<float>& logits) {
-        std::vector<std::pair<float,int>> top;
-        for (size_t i = 0; i < logits.size(); ++i) top.push_back({logits[i], (int)i});
-        std::partial_sort(top.begin(), top.begin()+5, top.end(),
-                          [](const auto& a, const auto& b){ return a.first > b.first; });
-        std::cout << label << ": ";
-        for (int k = 0; k < 5; ++k)
-            std::cout << "[" << top[k].second << "=" << inference_->tokenizer().decode({top[k].second})
-                      << "(" << top[k].first << ")] ";
-        std::cout << "\n";
-    };
-
-    std::cout << "\n=== No-cache vs decode comparison ===\n";
-    std::cout << "Python reference: [6333=capital(28.4531)] [17821=Capital(16.8281)] ...\n";
-    print_top5("No-cache forward", *nc_result);
-    print_top5("Prefill+decode  ", *dc_result);
 }
 
 // Exercises the same sampling path as the app

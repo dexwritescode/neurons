@@ -252,15 +252,6 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
             config.mrope_section = json["mrope_section"].get<std::vector<int>>();
         }
 
-        // Parse OPTIONAL metadata
-        if (json.contains("_name_or_path") && !json["_name_or_path"].is_null()) {
-            config.name_or_path = json["_name_or_path"].get<std::string>();
-        }
-
-        if (json.contains("transformers_version") && !json["transformers_version"].is_null()) {
-            config.transformers_version = json["transformers_version"].get<std::string>();
-        }
-
         return config;
 
     } catch (const nlohmann::json::parse_error& e) {

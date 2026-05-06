@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "compute/model/tinyllama_inference.h"
+#include "compute/model/llama_model.h"
 #include "compute/core/compute_backend.h"
 #include "test_config.h"
 #include <filesystem>
@@ -28,9 +28,9 @@ protected:
         backend_ = std::move(*backend_result);
         if (!backend_->initialize()) { skip_reason_ = "Backend init failed"; return; }
 
-        auto inf_result = TinyLlamaInference::from_model_dir(model_dir_, backend_.get());
+        auto inf_result = LlamaModel::from_model_dir(model_dir_, backend_.get());
         if (!inf_result) { skip_reason_ = inf_result.error().message; return; }
-        inference_ = std::make_unique<TinyLlamaInference>(std::move(*inf_result));
+        inference_ = std::make_unique<LlamaModel>(std::move(*inf_result));
     }
 
     static void TearDownTestSuite() {
@@ -49,46 +49,14 @@ protected:
     static std::filesystem::path              baseline_dir_;
     static std::string                        skip_reason_;
     static std::unique_ptr<ComputeBackend>    backend_;
-    static std::unique_ptr<TinyLlamaInference> inference_;
+    static std::unique_ptr<LlamaModel> inference_;
 };
 
 std::filesystem::path               ForwardPassTest::model_dir_;
 std::filesystem::path               ForwardPassTest::baseline_dir_;
 std::string                         ForwardPassTest::skip_reason_;
 std::unique_ptr<ComputeBackend>     ForwardPassTest::backend_;
-std::unique_ptr<TinyLlamaInference> ForwardPassTest::inference_;
-
-TEST_F(ForwardPassTest, GreedyTokenMatchesPython) {
-    GTEST_SKIP() << "forward() not available in MLX path (O.6.2)";
-
-    std::vector<int> token_ids = {1, 1724, 338, 278, 7483, 310, 3444, 29973};
-
-    std::cout << "Running forward_logits for " << token_ids.size() << " tokens..." << std::endl;
-
-    auto logits_result = inference_->forward(token_ids);
-    ASSERT_TRUE(logits_result.has_value()) << logits_result.error().message;
-
-    const auto& logits = *logits_result;
-    ASSERT_EQ(logits.size(), inference_->config().vocab_size);
-
-    int greedy_token = static_cast<int>(
-        std::max_element(logits.begin(), logits.end()) - logits.begin());
-
-    std::cout << "C++ greedy next token: " << greedy_token << std::endl;
-
-    const int python_greedy = 2;
-    EXPECT_EQ(greedy_token, python_greedy)
-        << "Greedy token mismatch: C++ got " << greedy_token
-        << ", Python got " << python_greedy;
-
-    float top_logit = logits[greedy_token];
-    EXPECT_TRUE(std::isfinite(top_logit));
-    EXPECT_GT(top_logit, -100.0f);
-    EXPECT_LT(top_logit, 100.0f);
-
-    std::cout << "✓ Greedy token matches Python baseline (token=" << greedy_token
-              << ", logit=" << top_logit << ")" << std::endl;
-}
+std::unique_ptr<LlamaModel> ForwardPassTest::inference_;
 
 TEST_F(ForwardPassTest, GenerateCoherentOutput) {
     const std::string prompt = "<|user|>\nWhat is the capital of France?</s>\n<|assistant|>\n";

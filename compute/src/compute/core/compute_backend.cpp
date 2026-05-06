@@ -26,9 +26,6 @@ Result<std::unique_ptr<ComputeBackend>> BackendFactory::create(BackendType type)
             return std::unexpected(Error{ErrorCode::BackendNotAvailable, "MLX backend only available on Apple Silicon with MLX enabled"});
 #endif
 
-        case BackendType::Metal:
-            return std::unexpected(Error{ErrorCode::BackendNotAvailable, "Metal backend not yet implemented; use MLX"});
-
         default:
             return std::unexpected(Error{ErrorCode::UnknownError, "Unknown backend type"});
     }

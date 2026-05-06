@@ -3,7 +3,6 @@
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
 #include "language_model.h"
-#include "qwen3_moe_model_base.h"
 #include <mlx/mlx.h>
 #include <functional>
 #include <optional>
@@ -21,7 +20,7 @@ namespace compute {
  * Prefill runs all T prompt tokens in one eager pass: one Metal dispatch per SSM layer
  * (T-loop inside kernel), one SDPA per attention layer, T per-token MoE calls.
  */
-class Qwen3MoeModelMLX final : public Qwen3MoeModelBase, public LanguageModel {
+class Qwen3MoeModelMLX final : public LanguageModel {
 public:
     static Result<Qwen3MoeModelMLX> from_model_dir(
         const std::filesystem::path& model_dir,
@@ -72,11 +71,12 @@ private:
         SamplingParams params,
         std::function<bool(int)> on_token);
 
+    ModelConfig                                        config_;
+    SimpleBpeTokenizer                                 tokenizer_;
     std::unordered_map<std::string, mlx::core::array> mlx_weights_;
     mlx::core::array                                  embed_mat_;
     std::optional<MlxDecodeState>                     mlx_state_;
     size_t                                            cache_position_ = 0;
-    size_t                                            context_size_   = 0;
 };
 
 } // namespace compute

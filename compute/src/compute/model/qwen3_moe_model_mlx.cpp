@@ -429,11 +429,13 @@ Qwen3MoeModelMLX::Qwen3MoeModelMLX(
     std::unordered_map<std::string, mx::array>        mlx_weights,
     mx::array                                         embed_mat,
     size_t                                            context_size)
-    : Qwen3MoeModelBase(std::move(config), std::move(tokenizer), {})
+    : config_(std::move(config))
+    , tokenizer_(std::move(tokenizer))
     , mlx_weights_(std::move(mlx_weights))
     , embed_mat_(std::move(embed_mat))
-    , context_size_(context_size)
-{}
+{
+    (void)context_size;
+}
 
 size_t Qwen3MoeModelMLX::num_parameters() const {
     size_t total = 0;
