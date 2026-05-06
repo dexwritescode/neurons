@@ -39,9 +39,50 @@ Result<LlamaModel> LlamaModel::from_model_dir(
     ComputeBackend*              backend,
     size_t                       context_size)
 {
-    if (!backend) {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+    // O.6.2: load weights directly as mx::array — no Tensor intermediary.
+    // weights_ is left empty; all inference goes through the MLX path.
+    namespace mx = mlx::core;
+
+    auto mlx_result = ModelLoader::load_model_mlx(model_dir);
+    if (!mlx_result) return std::unexpected(mlx_result.error());
+
+    auto& [config, mlx_weights] = *mlx_result;
+
+    auto tokenizer_result = SimpleBpeTokenizer::from_model_dir(model_dir);
+    if (!tokenizer_result) return std::unexpected(tokenizer_result.error());
+
+    if (!config.is_valid())
+        return std::unexpected(Error{ErrorCode::InvalidModel, "Invalid model configuration"});
+    if (!config.is_supported_architecture())
+        return std::unexpected(Error{ErrorCode::InvalidModel,
+            "Unsupported model architecture: " + config.model_type});
+
+    auto ew_it = mlx_weights.find("model.embed_tokens.weight");
+    if (ew_it == mlx_weights.end())
+        return std::unexpected(Error{ErrorCode::InvalidModel, "embed_tokens.weight missing"});
+
+    mx::array embed_mat = [&]() -> mx::array {
+        int gs = config.quantization ? config.quantization->group_size : 64;
+        auto sc = mlx_weights.find("model.embed_tokens.scales");
+        if (sc != mlx_weights.end()) {
+            auto bi = mlx_weights.find("model.embed_tokens.biases");
+            if (bi != mlx_weights.end()) {
+                int b = mlx_ops::bits(ew_it->second, sc->second, gs);
+                return mx::dequantize(ew_it->second, sc->second, bi->second, gs, b);
+            }
+        }
+        return ew_it->second;
+    }();
+    mx::eval(embed_mat);
+
+    LlamaModel model(std::move(config), std::move(*tokenizer_result), {}, backend);
+    model.mlx_setup(std::move(mlx_weights), std::move(embed_mat), context_size);
+    return model;
+
+#else
+    if (!backend)
         return std::unexpected(Error{ErrorCode::InvalidArgument, "Backend cannot be null"});
-    }
 
     auto model_result = ModelLoader::load_model(model_dir, backend);
     if (!model_result) return std::unexpected(model_result.error());
@@ -51,54 +92,14 @@ Result<LlamaModel> LlamaModel::from_model_dir(
     auto tokenizer_result = SimpleBpeTokenizer::from_model_dir(model_dir);
     if (!tokenizer_result) return std::unexpected(tokenizer_result.error());
 
-    if (!config.is_valid()) {
+    if (!config.is_valid())
         return std::unexpected(Error{ErrorCode::InvalidModel, "Invalid model configuration"});
-    }
-    if (!config.is_supported_architecture()) {
+    if (!config.is_supported_architecture())
         return std::unexpected(Error{ErrorCode::InvalidModel,
             "Unsupported model architecture: " + config.model_type});
-    }
 
-    LlamaModel model(
-        std::move(config),
-        std::move(*tokenizer_result),
-        std::move(weights),
-        backend);
-
-#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
-    // Extract MLX arrays from the already-loaded Tensor weights (single disk read).
-    std::unordered_map<std::string, mlx::core::array> mlx_weights;
-    mlx_weights.reserve(model.weights_.size());
-    for (auto& [key, tensor] : model.weights_)
-        mlx_weights.insert_or_assign(key, tensor.to_mlx());
-
-    // Dequantize the embedding table eagerly so mx::compile treats it as a constant.
-    // Valid models always have embed_tokens.weight (already confirmed by is_valid() above).
-    auto ew_it = mlx_weights.find("model.embed_tokens.weight");
-    mlx::core::array embed_mat = [&]() -> mlx::core::array {
-        auto sc = mlx_weights.find("model.embed_tokens.scales");
-        if (sc != mlx_weights.end()) {
-            auto bi = mlx_weights.find("model.embed_tokens.biases");
-            if (bi != mlx_weights.end()) {
-                int gs = model.config_.quantization
-                    ? model.config_.quantization->group_size : 64;
-                double ratio = static_cast<double>(ew_it->second.shape().back()) /
-                               static_cast<double>(sc->second.shape().back());
-                int bits = static_cast<int>(std::round(32.0 * ratio / gs));
-                if (bits <= 0) bits = 4;
-                return mlx::core::dequantize(ew_it->second, sc->second, bi->second, gs, bits);
-            }
-        }
-        return ew_it->second;
-    }();
-    mlx::core::eval(embed_mat);
-
-    model.mlx_setup(std::move(mlx_weights), std::move(embed_mat), context_size);
-#else
-    (void)context_size;
+    return LlamaModel(std::move(config), std::move(*tokenizer_result), std::move(weights), backend);
 #endif
-
-    return model;
 }
 
 // ── Weight lookup ─────────────────────────────────────────────────────────────

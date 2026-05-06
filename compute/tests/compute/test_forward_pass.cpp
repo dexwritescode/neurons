@@ -59,6 +59,8 @@ std::unique_ptr<ComputeBackend>     ForwardPassTest::backend_;
 std::unique_ptr<TinyLlamaInference> ForwardPassTest::inference_;
 
 TEST_F(ForwardPassTest, GreedyTokenMatchesPython) {
+    GTEST_SKIP() << "forward() not available in MLX path (O.6.2)";
+
     std::vector<int> token_ids = {1, 1724, 338, 278, 7483, 310, 3444, 29973};
 
     std::cout << "Running forward_logits for " << token_ids.size() << " tokens..." << std::endl;

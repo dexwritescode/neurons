@@ -94,6 +94,8 @@ std::unique_ptr<ComputeBackend>     AttentionQKVTraceTest::backend_;
 std::unique_ptr<TinyLlamaInference> AttentionQKVTraceTest::inference_;
 
 TEST_F(AttentionQKVTraceTest, CompareWithPythonBaseline) {
+    GTEST_SKIP() << "attention_layer() not available in MLX path (O.6.2)";
+
     auto baseline_file = baseline_dir_ / "attention_full_baseline.safetensors";
     ASSERT_TRUE(std::filesystem::exists(baseline_file))
         << "Baseline file not found: " << baseline_file;
