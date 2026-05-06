@@ -452,7 +452,21 @@ Result<std::vector<float>> GemmaModel::forward_impl(
     return result;
 }
 
-// ── KV-cache public API ───────────────────────────────────────────────────────
+// ── LanguageModel interface ───────────────────────────────────────────────────
+
+Result<std::vector<int>> GemmaModel::generate(
+    const std::vector<int>&  input_ids,
+    size_t                   max_new_tokens,
+    SamplingParams           params,
+    std::function<bool(int)> on_token)
+{
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
+}
+
+// ── KV-cache steps ────────────────────────────────────────────────────────────
 
 void GemmaModel::reset_cache() {
     kv_cache_.clear();

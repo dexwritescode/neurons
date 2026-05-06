@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../core/compute_types.h"
+#include "model_config.h"
+#include <functional>
 #include <vector>
 #include <cstddef>
 
@@ -29,6 +32,28 @@ public:
     static int sample(const std::vector<float>& logits,
                       const SamplingParams&      params,
                       const std::vector<int>&    context_ids);
+};
+
+/**
+ * Reusable generate loop shared by all LanguageModel subclasses.
+ *
+ * Accepts prefill and decode as std::function so each subclass can pass
+ * lambdas that capture its own private state, without exposing those steps
+ * through the LanguageModel interface.
+ */
+class GenerateHelper {
+public:
+    using PrefillFn = std::function<Result<std::vector<float>>(const std::vector<int>&)>;
+    using DecodeFn  = std::function<Result<std::vector<float>>(int)>;
+
+    static Result<std::vector<int>> run(
+        const std::vector<int>&  input_ids,
+        size_t                   max_new_tokens,
+        SamplingParams           params,
+        std::function<bool(int)> on_token,
+        const ModelConfig&       config,
+        PrefillFn                prefill,
+        DecodeFn                 decode);
 };
 
 } // namespace compute

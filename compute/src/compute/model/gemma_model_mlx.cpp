@@ -519,7 +519,10 @@ Result<std::vector<int>> GemmaModelMLX::generate(
 {
     if (params.temperature < 1e-6f)
         return gemma_generate_pipelined(input_ids, max_new_tokens, params, on_token);
-    return LanguageModel::generate(input_ids, max_new_tokens, params, on_token);
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
 }
 
 // ── GPU-pipelined greedy generate ─────────────────────────────────────────────

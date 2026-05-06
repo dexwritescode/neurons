@@ -488,7 +488,7 @@ void LlamaModel::reset_cache() {
 // unevaluated argmax from step N as input to step N+1 before waiting for step
 // N to complete.  This keeps the GPU busy between decode steps and eliminates
 // the CPU↔GPU round-trip idle time present in the base-class loop.
-// Non-greedy and non-MLX paths fall back to LanguageModel::generate().
+// Non-greedy and non-MLX paths use GenerateHelper::run() (the shared loop).
 
 Result<std::vector<int>> LlamaModel::generate(
     const std::vector<int>& input_ids,
@@ -500,7 +500,10 @@ Result<std::vector<int>> LlamaModel::generate(
     if (params.temperature < 1e-6f)
         return mlx_generate_pipelined(input_ids, max_new_tokens, params, on_token);
 #endif
-    return LanguageModel::generate(input_ids, max_new_tokens, params, on_token);
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
 }
 
 Result<std::vector<float>> LlamaModel::prefill(const std::vector<int>& prompt_ids) {

@@ -29,10 +29,6 @@ public:
 
     // ── LanguageModel interface ───────────────────────────────────────────────
 
-    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids) override;
-    Result<std::vector<float>> decode(int token_id) override;
-    void reset_cache() override;
-
     Result<std::vector<int>> generate(
         const std::vector<int>& input_ids,
         size_t max_new_tokens = 4096,
@@ -42,8 +38,13 @@ public:
     const ModelConfig&        config()         const override { return config_; }
     const std::string&        model_type()     const override { return config_.model_type; }
     const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
-    ComputeBackend*           backend()        const override { return backend_; }
     size_t                    num_parameters() const override;
+
+    // ── KV-cache step interface (public for diagnostic tests) ─────────────────
+
+    Result<std::vector<float>> prefill(const std::vector<int>& prompt_ids);
+    Result<std::vector<float>> decode(int token_id);
+    void reset_cache();
 
     // ── Tool-use (LanguageModel overrides) ───────────────────────────────────
     bool                     supports_tool_use()          const override;

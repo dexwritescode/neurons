@@ -1,5 +1,6 @@
 #include "qwen3_moe_model_mlx.h"
 #include "model_loader.h"
+#include "sampler.h"
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
@@ -816,7 +817,10 @@ Result<std::vector<int>> Qwen3MoeModelMLX::generate(
 {
     if (params.temperature < 1e-6f)
         return moe_generate_pipelined(input_ids, max_new_tokens, params, on_token);
-    return LanguageModel::generate(input_ids, max_new_tokens, params, on_token);
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
 }
 
 Result<std::vector<int>> Qwen3MoeModelMLX::moe_generate_pipelined(

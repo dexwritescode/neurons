@@ -1,9 +1,11 @@
 #include "qwen3_moe_model.h"
 #include "model_loader.h"
+#include "sampler.h"
 #include "simple_bpe_tokenizer.h"
 #include "../core/compute_backend.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace compute {
 
@@ -38,6 +40,20 @@ Qwen3MoeModel::Qwen3MoeModel(
 {}
 
 // ── LanguageModel interface ───────────────────────────────────────────────────
+
+Result<std::vector<int>> Qwen3MoeModel::generate(
+    const std::vector<int>&  input_ids,
+    size_t                   max_new_tokens,
+    SamplingParams           params,
+    std::function<bool(int)> on_token)
+{
+    return GenerateHelper::run(
+        input_ids, max_new_tokens, params, on_token, config_,
+        [this](const std::vector<int>& ids) { return prefill(ids); },
+        [this](int tok) { return decode(tok); });
+}
+
+// ── KV-cache steps ────────────────────────────────────────────────────────────
 
 Result<std::vector<float>> Qwen3MoeModel::prefill(const std::vector<int>& prompt_ids) {
     if (prompt_ids.empty())
