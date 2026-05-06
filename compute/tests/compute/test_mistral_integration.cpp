@@ -225,46 +225,6 @@ TEST_F(MistralIntegrationTest, DiagnosticTokenLogitTrace) {
     std::cout << "================================================\n\n";
 }
 
-// Diagnostic: compare no-cache forward vs prefill+decode
-// Skipped on Apple Silicon: LlamaModel uses the MLX path which has no Tensor
-// weights_ (O.6.2), so forward() is not available.
-TEST_F(MistralIntegrationTest, DiagnosticNoCacheVsDecode) {
-    GTEST_SKIP() << "forward() not available in MLX path (O.6.2)";
-
-    const std::string prompt = "[INST] What is the capital of France? [/INST]";
-    auto token_ids = inference_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
-    ASSERT_FALSE(token_ids.empty());
-
-    const int tok_the = 1183;
-
-    std::vector<int> extended = token_ids;
-    extended.push_back(tok_the);
-    auto nc_result = inference_->forward(extended);
-    ASSERT_TRUE(nc_result.has_value()) << nc_result.error().message;
-
-    auto pf_result = inference_->prefill(token_ids);
-    ASSERT_TRUE(pf_result.has_value()) << pf_result.error().message;
-    auto dc_result = inference_->decode(tok_the);
-    ASSERT_TRUE(dc_result.has_value()) << dc_result.error().message;
-
-    auto print_top5 = [&](const std::string& label, const std::vector<float>& logits) {
-        std::vector<std::pair<float,int>> top;
-        for (size_t i = 0; i < logits.size(); ++i) top.push_back({logits[i], (int)i});
-        std::partial_sort(top.begin(), top.begin()+5, top.end(),
-                          [](const auto& a, const auto& b){ return a.first > b.first; });
-        std::cout << label << ": ";
-        for (int k = 0; k < 5; ++k)
-            std::cout << "[" << top[k].second << "=" << inference_->tokenizer().decode({top[k].second})
-                      << "(" << top[k].first << ")] ";
-        std::cout << "\n";
-    };
-
-    std::cout << "\n=== No-cache vs decode comparison ===\n";
-    std::cout << "Python reference: [6333=capital(28.4531)] [17821=Capital(16.8281)] ...\n";
-    print_top5("No-cache forward", *nc_result);
-    print_top5("Prefill+decode  ", *dc_result);
-}
-
 // Exercises the same sampling path as the app
 TEST_F(MistralIntegrationTest, GenerateCapitalOfFranceWithSampling) {
     const std::string prompt = "[INST] what is the capital of france? [/INST]";

@@ -58,38 +58,6 @@ std::string                         ForwardPassTest::skip_reason_;
 std::unique_ptr<ComputeBackend>     ForwardPassTest::backend_;
 std::unique_ptr<TinyLlamaInference> ForwardPassTest::inference_;
 
-TEST_F(ForwardPassTest, GreedyTokenMatchesPython) {
-    GTEST_SKIP() << "forward() not available in MLX path (O.6.2)";
-
-    std::vector<int> token_ids = {1, 1724, 338, 278, 7483, 310, 3444, 29973};
-
-    std::cout << "Running forward_logits for " << token_ids.size() << " tokens..." << std::endl;
-
-    auto logits_result = inference_->forward(token_ids);
-    ASSERT_TRUE(logits_result.has_value()) << logits_result.error().message;
-
-    const auto& logits = *logits_result;
-    ASSERT_EQ(logits.size(), inference_->config().vocab_size);
-
-    int greedy_token = static_cast<int>(
-        std::max_element(logits.begin(), logits.end()) - logits.begin());
-
-    std::cout << "C++ greedy next token: " << greedy_token << std::endl;
-
-    const int python_greedy = 2;
-    EXPECT_EQ(greedy_token, python_greedy)
-        << "Greedy token mismatch: C++ got " << greedy_token
-        << ", Python got " << python_greedy;
-
-    float top_logit = logits[greedy_token];
-    EXPECT_TRUE(std::isfinite(top_logit));
-    EXPECT_GT(top_logit, -100.0f);
-    EXPECT_LT(top_logit, 100.0f);
-
-    std::cout << "✓ Greedy token matches Python baseline (token=" << greedy_token
-              << ", logit=" << top_logit << ")" << std::endl;
-}
-
 TEST_F(ForwardPassTest, GenerateCoherentOutput) {
     const std::string prompt = "<|user|>\nWhat is the capital of France?</s>\n<|assistant|>\n";
     auto token_ids = inference_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
