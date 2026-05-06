@@ -98,3 +98,4 @@ cmake-build-debug/
 *.db
 .beads-credential-key
 .beads/
+.beads/
