@@ -8,6 +8,7 @@
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include "qwen3_moe_model_mlx.h"
+#include "gemma_model_mlx.h"
 #endif
 
 namespace compute {
@@ -80,9 +81,15 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
     }
 
     if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text") {
+#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
+        auto result = GemmaModelMLX::from_model_dir(model_dir);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<GemmaModelMLX>(std::move(*result));
+#else
         auto result = GemmaModel::from_model_dir(model_dir, backend);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<GemmaModel>(std::move(*result));
+#endif
     }
 
     if (model_type == "qwen3_5_moe" || model_type == "qwen3_moe") {

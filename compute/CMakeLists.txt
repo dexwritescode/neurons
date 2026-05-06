@@ -31,6 +31,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         list(APPEND BACKEND_SOURCES
             src/compute/backends/mlx/mlx_backend.cpp
             src/compute/model/qwen3_moe_model_mlx.cpp
+            src/compute/model/gemma_model_mlx.cpp
         )
         set(MLX_AVAILABLE TRUE)
 
@@ -59,6 +60,7 @@ add_library(compute_backend
     src/compute/model/chat_template.cpp
     src/compute/model/language_model.cpp
     src/compute/model/llama_model.cpp
+    src/compute/model/gemma_model_base.cpp
     src/compute/model/gemma_model.cpp
     src/compute/model/qwen3_moe_model_base.cpp
     src/compute/model/qwen3_moe_model.cpp
