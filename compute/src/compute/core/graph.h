@@ -206,8 +206,4 @@ inline ComputeGraphBuilder graph(BackendType backend = BackendType::Auto) {
     return ComputeGraphBuilder(backend);
 }
 
-inline ComputeGraphBuilder metal_graph() {
-    return ComputeGraphBuilder(BackendType::Metal);
-}
-
 } // namespace compute

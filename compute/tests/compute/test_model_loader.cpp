@@ -205,7 +205,7 @@ TEST_F(ModelLoaderTest, FindSafetensorsFiles) {
     // We'll use a mock backend that claims to be something other than MLX
     class NonMLXMockBackend : public ComputeBackend {
     public:
-        BackendType type() const override { return BackendType::Metal; } // Not MLX
+        BackendType type() const override { return BackendType::Auto; } // Not MLX
         std::string name() const override { return "NonMLXMock"; }
         bool is_available() const override { return false; }
         Result<void> initialize() override { return {}; }
