@@ -90,22 +90,6 @@ private:
     std::vector<SsmState>     ssm_cache_;
     size_t                    cache_position_ = 0;
 
-#if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
-    // Compiled MLX decode state — built once after the first prefill, reused for all tokens.
-    struct MlxDecodeState {
-        std::vector<mx::array> kv_keys;      // one per full-attention layer (10 for 40-layer model)
-        std::vector<mx::array> kv_vals;
-        std::vector<mx::array> ssm_conv;     // one per SSM layer (30 for 40-layer model)
-        std::vector<mx::array> ssm_rec;
-        std::function<std::vector<mx::array>(const std::vector<mx::array>&)> compiled_fn;
-        bool fn_ready = false;
-    };
-
-    void initialize_mlx_state();
-    void build_mlx_compile_fn();
-
-    std::optional<MlxDecodeState> mlx_state_;
-#endif
 };
 
 } // namespace compute
