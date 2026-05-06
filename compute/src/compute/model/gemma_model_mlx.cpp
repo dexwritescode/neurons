@@ -3,6 +3,7 @@
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
 #include "model_loader.h"
+#include "mlx_ops.h"
 #include "sampler.h"
 #include <algorithm>
 #include <cmath>
@@ -11,34 +12,8 @@
 namespace compute {
 namespace mx = mlx::core;
 
-// ── Anonymous helpers ─────────────────────────────────────────────────────────
-
 namespace {
-
-using WM = std::unordered_map<std::string, mx::array>;
-
-static int gemma_mlx_bits(const mx::array& w, const mx::array& s, int gs) {
-    double ratio = static_cast<double>(w.shape().back()) /
-                   static_cast<double>(s.shape().back());
-    int bits = static_cast<int>(std::round(32.0 * ratio / static_cast<double>(gs)));
-    return (bits > 0) ? bits : 4;
-}
-
-static mx::array gemma_mlx_lin(const mx::array& x, const std::string& key,
-                                const WM& wm, int gs)
-{
-    const mx::array& w = wm.at(key + ".weight");
-    auto sit = wm.find(key + ".scales");
-    if (sit != wm.end()) {
-        int bits = gemma_mlx_bits(w, sit->second, gs);
-        std::optional<mx::array> bias;
-        auto bit = wm.find(key + ".biases");
-        if (bit != wm.end()) bias = bit->second;
-        return mx::quantized_matmul(x, w, sit->second, bias, true, gs, bits, "affine");
-    }
-    return mx::matmul(x, mx::swapaxes(w, 0, 1));
-}
-
+using namespace compute::mlx_ops;
 } // anonymous namespace
 
 // ── Factory ───────────────────────────────────────────────────────────────────
@@ -102,9 +77,9 @@ Result<GemmaModelMLX> GemmaModelMLX::from_model_dir(
         if (sc_it != mlx_weights.end()) {
             auto bi_it = mlx_weights.find("model.embed_tokens.biases");
             if (bi_it != mlx_weights.end()) {
-                int gs   = config.quantization ? config.quantization->group_size : 64;
-                int bits = gemma_mlx_bits(ew_it->second, sc_it->second, gs);
-                return mx::dequantize(ew_it->second, sc_it->second, bi_it->second, gs, bits);
+                int gs = config.quantization ? config.quantization->group_size : 64;
+                int b  = bits(ew_it->second, sc_it->second, gs);
+                return mx::dequantize(ew_it->second, sc_it->second, bi_it->second, gs, b);
             }
         }
         return ew_it->second;
@@ -218,9 +193,9 @@ void GemmaModelMLX::build_decode_fn() {
             auto normed = mx::fast::rms_norm(
                 h, 1.0f + wm.at(lpfx + "input_layernorm.weight"), rms_eps);
 
-            auto q_raw = gemma_mlx_lin(normed, apfx + "q_proj", wm, gs);
-            auto k_raw = gemma_mlx_lin(normed, apfx + "k_proj", wm, gs);
-            auto v_raw = gemma_mlx_lin(normed, apfx + "v_proj", wm, gs);
+            auto q_raw = lin(normed, apfx + "q_proj", wm, gs);
+            auto k_raw = lin(normed, apfx + "k_proj", wm, gs);
+            auto v_raw = lin(normed, apfx + "v_proj", wm, gs);
 
             auto qt = mx::reshape(q_raw, {(int)n_heads, 1, (int)head_dim});
             auto kt = mx::reshape(k_raw, {(int)n_kv,   1, (int)head_dim});
@@ -269,7 +244,7 @@ void GemmaModelMLX::build_decode_fn() {
             auto attn_flat = mx::reshape(mx::swapaxes(attn4, 1, 2),
                                          {1, (int)(n_heads * head_dim)});
 
-            auto attn_out = gemma_mlx_lin(attn_flat, apfx + "o_proj", wm, gs);
+            auto attn_out = lin(attn_flat, apfx + "o_proj", wm, gs);
 
             // post_attention_layernorm on attn OUTPUT, then residual
             h = h + mx::fast::rms_norm(
@@ -278,11 +253,11 @@ void GemmaModelMLX::build_decode_fn() {
             // FFN sub-block: pre_feedforward_layernorm, GeGLU, post_feedforward_layernorm
             auto normed_ffn = mx::fast::rms_norm(
                 h, 1.0f + wm.at(lpfx + "pre_feedforward_layernorm.weight"), rms_eps);
-            auto gate_m  = gemma_mlx_lin(normed_ffn, mpfx + "gate_proj", wm, gs);
-            auto up      = gemma_mlx_lin(normed_ffn, mpfx + "up_proj",   wm, gs);
+            auto gate_m  = lin(normed_ffn, mpfx + "gate_proj", wm, gs);
+            auto up      = lin(normed_ffn, mpfx + "up_proj",   wm, gs);
             // GeGLU: gelu(gate) * up  (not SwiGLU). MLX has no gelu(); use exact form.
             auto gelu_gate = 0.5f * gate_m * (1.0f + mx::erf(gate_m * static_cast<float>(1.0 / std::sqrt(2.0))));
-            auto ffn_out = gemma_mlx_lin(gelu_gate * up, mpfx + "down_proj", wm, gs);
+            auto ffn_out = lin(gelu_gate * up, mpfx + "down_proj", wm, gs);
 
             // post_feedforward_layernorm on FFN OUTPUT, then residual
             h = h + mx::fast::rms_norm(
@@ -295,7 +270,7 @@ void GemmaModelMLX::build_decode_fn() {
         // LM head: separate or tied to embed
         auto logits_raw = tied_embed
             ? mx::matmul(h, mx::swapaxes(em, 0, 1))
-            : gemma_mlx_lin(h, "lm_head", wm, gs);
+            : lin(h, "lm_head", wm, gs);
         auto logits = mx::astype(mx::reshape(logits_raw, {(int)vocab_size}), mx::float32);
 
         std::vector<mx::array> outputs;
@@ -366,9 +341,9 @@ Result<std::vector<float>> GemmaModelMLX::run_prefill(const std::vector<int>& pr
         auto normed = mx::fast::rms_norm(
             h, 1.0f + wm.at(lpfx + "input_layernorm.weight"), rms_eps);
 
-        auto q_raw = gemma_mlx_lin(normed, apfx + "q_proj", wm, gs);
-        auto k_raw = gemma_mlx_lin(normed, apfx + "k_proj", wm, gs);
-        auto v_raw = gemma_mlx_lin(normed, apfx + "v_proj", wm, gs);
+        auto q_raw = lin(normed, apfx + "q_proj", wm, gs);
+        auto k_raw = lin(normed, apfx + "k_proj", wm, gs);
+        auto v_raw = lin(normed, apfx + "v_proj", wm, gs);
 
         auto qt = mx::swapaxes(mx::reshape(q_raw, {seq_len, (int)n_heads, (int)head_dim}), 0, 1);
         auto kt = mx::swapaxes(mx::reshape(k_raw, {seq_len, (int)n_kv,   (int)head_dim}), 0, 1);
@@ -411,17 +386,17 @@ Result<std::vector<float>> GemmaModelMLX::run_prefill(const std::vector<int>& pr
         auto attn_flat = mx::reshape(mx::swapaxes(attn4, 1, 2),
                                      {seq_len, (int)(n_heads * head_dim)});
 
-        auto attn_out = gemma_mlx_lin(attn_flat, apfx + "o_proj", wm, gs);
+        auto attn_out = lin(attn_flat, apfx + "o_proj", wm, gs);
 
         h = h + mx::fast::rms_norm(
             attn_out, 1.0f + wm.at(lpfx + "post_attention_layernorm.weight"), rms_eps);
 
         auto normed_ffn = mx::fast::rms_norm(
             h, 1.0f + wm.at(lpfx + "pre_feedforward_layernorm.weight"), rms_eps);
-        auto gate_m  = gemma_mlx_lin(normed_ffn, mpfx + "gate_proj", wm, gs);
-        auto up      = gemma_mlx_lin(normed_ffn, mpfx + "up_proj",   wm, gs);
+        auto gate_m  = lin(normed_ffn, mpfx + "gate_proj", wm, gs);
+        auto up      = lin(normed_ffn, mpfx + "up_proj",   wm, gs);
         auto gelu_gate = 0.5f * gate_m * (1.0f + mx::erf(gate_m * static_cast<float>(1.0 / std::sqrt(2.0))));
-        auto ffn_out = gemma_mlx_lin(gelu_gate * up, mpfx + "down_proj", wm, gs);
+        auto ffn_out = lin(gelu_gate * up, mpfx + "down_proj", wm, gs);
 
         h = h + mx::fast::rms_norm(
             ffn_out, 1.0f + wm.at(lpfx + "post_feedforward_layernorm.weight"), rms_eps);
@@ -435,7 +410,7 @@ Result<std::vector<float>> GemmaModelMLX::run_prefill(const std::vector<int>& pr
 
     auto logits_raw = tied_embed
         ? mx::matmul(h_last, mx::swapaxes(em, 0, 1))
-        : gemma_mlx_lin(h_last, "lm_head", wm, gs);
+        : lin(h_last, "lm_head", wm, gs);
     auto logits = mx::astype(mx::reshape(logits_raw, {(int)vocab_size}), mx::float32);
 
     // Evaluate logits + all KV in one dispatch

@@ -4,6 +4,7 @@
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 
+#include "mlx_ops.h"
 #include <cmath>
 #include <algorithm>
 #include <unordered_set>
@@ -18,7 +19,7 @@ namespace compute {
 // ═══════════════════════════════════════════════════════════════════════════════
 namespace {
 
-using WM = std::unordered_map<std::string, mx::array>;
+using namespace compute::mlx_ops;
 
 // ── Fused GatedDeltaNet decode kernel ─────────────────────────────────────────
 // Mirrors mlx-lm gated_delta.py: custom Metal kernel used in inference.
@@ -90,25 +91,6 @@ static const mx::fast::CustomKernelFunction& gated_delta_kernel() {
     return fn;
 }
 
-static int mlx_bits(const mx::array& w, const mx::array& s, int gs) {
-    double ratio = static_cast<double>(w.shape().back()) /
-                   static_cast<double>(s.shape().back());
-    int bits = static_cast<int>(std::round(32.0 * ratio / static_cast<double>(gs)));
-    return (bits > 0) ? bits : 4;
-}
-
-static mx::array mlx_lin(const mx::array& x, const std::string& key, const WM& wm, int gs) {
-    const mx::array& w = wm.at(key + ".weight");
-    auto sit = wm.find(key + ".scales");
-    if (sit != wm.end()) {
-        int bits = mlx_bits(w, sit->second, gs);
-        std::optional<mx::array> bias;
-        auto bit = wm.find(key + ".biases");
-        if (bit != wm.end()) bias = bit->second;
-        return mx::quantized_matmul(x, w, sit->second, bias, true, gs, bits, "affine");
-    }
-    return mx::matmul(x, mx::swapaxes(w, 0, 1));
-}
 
 // x: [1, T, hidden]; pos: scalar/[1] int32 RoPE offset.
 // context_size == 0 (default) → growing-KV path: concatenate kv_k/kv_v with new
@@ -132,9 +114,9 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
     int T = x.shape(1);
     auto x2d = mx::reshape(x, {T, (int)x.shape(2)});
 
-    auto q_raw = mlx_lin(x2d, pfx + "q_proj", wm, gs);
-    auto k_raw = mlx_lin(x2d, pfx + "k_proj", wm, gs);
-    auto v_raw = mlx_lin(x2d, pfx + "v_proj", wm, gs);
+    auto q_raw = lin(x2d, pfx + "q_proj", wm, gs);
+    auto k_raw = lin(x2d, pfx + "k_proj", wm, gs);
+    auto v_raw = lin(x2d, pfx + "v_proj", wm, gs);
 
     auto q_gate = mx::reshape(q_raw, {T, (int)n_heads, 2, (int)head_dim});
     auto q_h    = mx::take(q_gate, mx::array(0, mx::int32), 2);
@@ -211,7 +193,7 @@ mlx_full_attn_step(const mx::array& x, int layer_idx,
 
     auto attn_flat = mx::reshape(attn4, {1, T, (int)(n_heads * head_dim)});
     auto gated     = attn_flat * mx::sigmoid(gate);
-    auto out       = mlx_lin(mx::reshape(gated, {T, (int)(n_heads * head_dim)}),
+    auto out       = lin(mx::reshape(gated, {T, (int)(n_heads * head_dim)}),
                               pfx + "o_proj", wm, gs);
     out = mx::reshape(out, {1, T, (int)x.shape(2)});
 
@@ -238,10 +220,10 @@ mlx_ssm_step(const mx::array& x, int layer_idx,
     int T = x.shape(1);
     auto x2d = mx::reshape(x, {T, (int)x.shape(2)});
 
-    auto qkv = mlx_lin(x2d, pfx + "in_proj_qkv", wm, gs);  // [T, conv_dim]
-    auto z   = mlx_lin(x2d, pfx + "in_proj_z",   wm, gs);  // [T, Hv*Dv]
-    auto b   = mlx_lin(x2d, pfx + "in_proj_b",   wm, gs);  // [T, Hv]
-    auto a   = mlx_lin(x2d, pfx + "in_proj_a",   wm, gs);  // [T, Hv]
+    auto qkv = lin(x2d, pfx + "in_proj_qkv", wm, gs);  // [T, conv_dim]
+    auto z   = lin(x2d, pfx + "in_proj_z",   wm, gs);  // [T, Hv*Dv]
+    auto b   = lin(x2d, pfx + "in_proj_b",   wm, gs);  // [T, Hv]
+    auto a   = lin(x2d, pfx + "in_proj_a",   wm, gs);  // [T, Hv]
 
     const mx::array& A_log    = wm.at(pfx + "A_log");
     const mx::array& dt_bias  = wm.at(pfx + "dt_bias");
@@ -323,7 +305,7 @@ mlx_ssm_step(const mx::array& x, int layer_idx,
     auto gated      = mx::reshape(out_normed, {1, T, (int)Hv, (int)Dv}) *
                       mx::sigmoid(z_3d) * z_3d;
     auto gated_flat = mx::reshape(gated, {1, T, (int)(Hv * Dv)});
-    auto out        = mlx_lin(gated_flat, pfx + "out_proj", wm, gs);  // [1, T, hidden]
+    auto out        = lin(gated_flat, pfx + "out_proj", wm, gs);  // [1, T, hidden]
 
     return {out, new_conv, h_new};
 }
@@ -337,7 +319,7 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
     const std::string sw  = pfx + "switch_mlp.";
 
     // Full softmax on all experts first (matches mlx-lm norm_topk_prob=true path)
-    auto gate_logits = mlx_lin(x, pfx + "gate", wm, gs);
+    auto gate_logits = lin(x, pfx + "gate", wm, gs);
     auto logits_1d   = mx::reshape(gate_logits, {(int)num_experts});
     auto gates_soft  = mx::softmax(mx::astype(logits_1d, mx::float32), -1);
 
@@ -365,8 +347,8 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
     std::optional<mx::array> ub3 = (ub3_it != wm.end()) ? std::optional(ub3_it->second) : std::nullopt;
     std::optional<mx::array> db3 = (db3_it != wm.end()) ? std::optional(db3_it->second) : std::nullopt;
 
-    int bits      = mlx_bits(gw3, gs3, gs);
-    int down_bits = mlx_bits(dw3, ds3, gs);
+    int bits      = mlx_ops::bits(gw3, gs3, gs);
+    int down_bits = mlx_ops::bits(dw3, ds3, gs);
 
     // Fused gather + quantized matmul: 3 dispatches instead of 6×take + 3×qmatmul.
     // rhs_indices selects expert topk_idx[i] for each output row i.
@@ -386,11 +368,11 @@ static mx::array mlx_moe_mlp_step(const mx::array& x, int layer_idx,
     auto switch_out = mx::reshape(mx::sum(down_k * scores_w, 0), {1, (int)x.shape(1)});
 
     // Shared expert
-    auto se_g    = mlx_lin(x, pfx + "shared_expert.gate_proj", wm, gs);
-    auto se_u    = mlx_lin(x, pfx + "shared_expert.up_proj",   wm, gs);
+    auto se_g    = lin(x, pfx + "shared_expert.gate_proj", wm, gs);
+    auto se_u    = lin(x, pfx + "shared_expert.up_proj",   wm, gs);
     auto se_h    = mx::sigmoid(se_g) * se_g * se_u;
-    auto se_out  = mlx_lin(se_h, pfx + "shared_expert.down_proj", wm, gs);
-    auto seg     = mlx_lin(x, pfx + "shared_expert_gate", wm, gs);
+    auto se_out  = lin(se_h, pfx + "shared_expert.down_proj", wm, gs);
+    auto seg     = lin(x, pfx + "shared_expert_gate", wm, gs);
     auto se_gated = se_out * mx::sigmoid(seg);
 
     return switch_out + se_gated;
@@ -424,9 +406,9 @@ Result<Qwen3MoeModelMLX> Qwen3MoeModelMLX::from_model_dir(
         if (sc_it != mlx_weights.end()) {
             auto bi_it = mlx_weights.find("language_model.model.embed_tokens.biases");
             if (bi_it != mlx_weights.end()) {
-                int gs   = config.quantization ? config.quantization->group_size : 64;
-                int bits = mlx_bits(ew_it->second, sc_it->second, gs);
-                return mx::dequantize(ew_it->second, sc_it->second, bi_it->second, gs, bits);
+                int gs = config.quantization ? config.quantization->group_size : 64;
+                int b  = mlx_ops::bits(ew_it->second, sc_it->second, gs);
+                return mx::dequantize(ew_it->second, sc_it->second, bi_it->second, gs, b);
             }
         }
         return ew_it->second;
@@ -595,7 +577,7 @@ void Qwen3MoeModelMLX::build_decode_fn() {
         hidden_arr = mx::reshape(hidden_arr, {1, (int)hidden});
         hidden_arr = mx::fast::rms_norm(
             hidden_arr, wm.at("language_model.model.norm.weight"), rms_eps);
-        hidden_arr = mlx_lin(hidden_arr, "language_model.lm_head", wm, gs);
+        hidden_arr = lin(hidden_arr, "language_model.lm_head", wm, gs);
 
         // Cast logits to float32 here so run_decode_step needs only one mx::eval.
         auto logits = mx::astype(
@@ -779,7 +761,7 @@ Result<std::vector<float>> Qwen3MoeModelMLX::run_prefill(const std::vector<int>&
     last_2d = mx::fast::rms_norm(
         last_2d, mlx_weights_.at("language_model.model.norm.weight"), rms_eps);
     auto logits = mx::astype(
-        mx::reshape(mlx_lin(last_2d, "language_model.lm_head", mlx_weights_, gs),
+        mx::reshape(lin(last_2d, "language_model.lm_head", mlx_weights_, gs),
                     {(int)vocab_size}),
         mx::float32);
     mx::eval(logits);

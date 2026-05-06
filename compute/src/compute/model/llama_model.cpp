@@ -10,6 +10,7 @@
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include <mlx/mlx.h>
 #include <mlx/compile.h>
+#include "mlx_ops.h"
 #endif
 
 namespace compute {
@@ -782,29 +783,7 @@ namespace mx = mlx::core;
 namespace compute {
 
 namespace {
-
-using WM = std::unordered_map<std::string, mx::array>;
-
-static int llama_mlx_bits(const mx::array& w, const mx::array& s, int gs) {
-    double ratio = static_cast<double>(w.shape().back()) /
-                   static_cast<double>(s.shape().back());
-    int bits = static_cast<int>(std::round(32.0 * ratio / static_cast<double>(gs)));
-    return (bits > 0) ? bits : 4;
-}
-
-static mx::array llama_mlx_lin(const mx::array& x, const std::string& key, const WM& wm, int gs) {
-    const mx::array& w = wm.at(key + ".weight");
-    auto sit = wm.find(key + ".scales");
-    if (sit != wm.end()) {
-        int bits = llama_mlx_bits(w, sit->second, gs);
-        std::optional<mx::array> bias;
-        auto bit = wm.find(key + ".biases");
-        if (bit != wm.end()) bias = bit->second;
-        return mx::quantized_matmul(x, w, sit->second, bias, true, gs, bits, "affine");
-    }
-    return mx::matmul(x, mx::swapaxes(w, 0, 1));
-}
-
+using namespace compute::mlx_ops;
 } // anonymous namespace
 
 void LlamaModel::mlx_setup(
@@ -878,9 +857,9 @@ void LlamaModel::mlx_build_decode_fn() {
 
             auto normed = mx::fast::rms_norm(h, wm.at(lpfx + "input_layernorm.weight"), rms_eps);
 
-            auto q_raw = llama_mlx_lin(normed, apfx + "q_proj", wm, gs);
-            auto k_raw = llama_mlx_lin(normed, apfx + "k_proj", wm, gs);
-            auto v_raw = llama_mlx_lin(normed, apfx + "v_proj", wm, gs);
+            auto q_raw = lin(normed, apfx + "q_proj", wm, gs);
+            auto k_raw = lin(normed, apfx + "k_proj", wm, gs);
+            auto v_raw = lin(normed, apfx + "v_proj", wm, gs);
 
             // Optional projection biases (Qwen2)
             {
@@ -958,20 +937,20 @@ void LlamaModel::mlx_build_decode_fn() {
             if (has_gate && gate_flat)
                 attn_flat = attn_flat * mx::sigmoid(*gate_flat);
 
-            h = h + llama_mlx_lin(attn_flat, apfx + "o_proj", wm, gs);
+            h = h + lin(attn_flat, apfx + "o_proj", wm, gs);
 
             auto normed2 = mx::fast::rms_norm(
                 h, wm.at(lpfx + "post_attention_layernorm.weight"), rms_eps);
-            auto gate_m  = llama_mlx_lin(normed2, mpfx + "gate_proj", wm, gs);
-            auto up      = llama_mlx_lin(normed2, mpfx + "up_proj",   wm, gs);
-            h = h + llama_mlx_lin(
+            auto gate_m  = lin(normed2, mpfx + "gate_proj", wm, gs);
+            auto up      = lin(normed2, mpfx + "up_proj",   wm, gs);
+            h = h + lin(
                 mx::sigmoid(gate_m) * gate_m * up, mpfx + "down_proj", wm, gs);
         }
 
         h = mx::fast::rms_norm(h, wm.at("model.norm.weight"), rms_eps);
 
         auto logits_raw = wm.count("lm_head.weight")
-            ? llama_mlx_lin(h, "lm_head", wm, gs)
+            ? lin(h, "lm_head", wm, gs)
             : mx::matmul(h, mx::swapaxes(em, 0, 1));
         auto logits = mx::astype(mx::reshape(logits_raw, {(int)vocab_size}), mx::float32);
 
@@ -1038,9 +1017,9 @@ Result<std::vector<float>> LlamaModel::mlx_prefill_batch(const std::vector<int>&
         auto normed = mx::fast::rms_norm(h, wm.at(lpfx + "input_layernorm.weight"), rms_eps);
 
         // QKV projections: {seq_len, n_heads*head_dim}, {seq_len, n_kv*head_dim}, {seq_len, n_kv*head_dim}
-        auto q_raw = llama_mlx_lin(normed, apfx + "q_proj", wm, gs);
-        auto k_raw = llama_mlx_lin(normed, apfx + "k_proj", wm, gs);
-        auto v_raw = llama_mlx_lin(normed, apfx + "v_proj", wm, gs);
+        auto q_raw = lin(normed, apfx + "q_proj", wm, gs);
+        auto k_raw = lin(normed, apfx + "k_proj", wm, gs);
+        auto v_raw = lin(normed, apfx + "v_proj", wm, gs);
 
         // Optional projection biases (Qwen2)
         {
@@ -1116,12 +1095,12 @@ Result<std::vector<float>> LlamaModel::mlx_prefill_batch(const std::vector<int>&
         if (has_gate && gate_flat)
             attn_flat = attn_flat * mx::sigmoid(*gate_flat);
 
-        h = h + llama_mlx_lin(attn_flat, apfx + "o_proj", wm, gs);
+        h = h + lin(attn_flat, apfx + "o_proj", wm, gs);
 
         auto normed2 = mx::fast::rms_norm(h, wm.at(lpfx + "post_attention_layernorm.weight"), rms_eps);
-        auto gate_m  = llama_mlx_lin(normed2, mpfx + "gate_proj", wm, gs);
-        auto up      = llama_mlx_lin(normed2, mpfx + "up_proj",   wm, gs);
-        h = h + llama_mlx_lin(mx::sigmoid(gate_m) * gate_m * up, mpfx + "down_proj", wm, gs);
+        auto gate_m  = lin(normed2, mpfx + "gate_proj", wm, gs);
+        auto up      = lin(normed2, mpfx + "up_proj",   wm, gs);
+        h = h + lin(mx::sigmoid(gate_m) * gate_m * up, mpfx + "down_proj", wm, gs);
     }
 
     h = mx::fast::rms_norm(h, wm.at("model.norm.weight"), rms_eps);
@@ -1131,7 +1110,7 @@ Result<std::vector<float>> LlamaModel::mlx_prefill_batch(const std::vector<int>&
         mx::take(h, mx::array(seq_len - 1, mx::int32), 0), {1, (int)hidden});
 
     auto logits_raw = wm.count("lm_head.weight")
-        ? llama_mlx_lin(h_last, "lm_head", wm, gs)
+        ? lin(h_last, "lm_head", wm, gs)
         : mx::matmul(h_last, mx::swapaxes(em, 0, 1));
     auto logits = mx::astype(mx::reshape(logits_raw, {(int)vocab_size}), mx::float32);
 
