@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "Neurons",
-  "project_id": "f096796d-004c-484e-a584-888fdf00122f"
-}
