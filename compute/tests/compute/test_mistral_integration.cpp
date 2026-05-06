@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "compute/model/tinyllama_inference.h"
+#include "compute/model/llama_model.h"
 #include "compute/core/compute_backend.h"
 #include "test_config.h"
 #include <filesystem>
@@ -29,12 +29,12 @@ protected:
         backend_ = std::move(*backend_result);
         if (!backend_->initialize()) { skip_reason_ = "Backend init failed"; return; }
 
-        auto inf_result = TinyLlamaInference::from_model_dir(model_dir_, backend_.get());
+        auto inf_result = LlamaModel::from_model_dir(model_dir_, backend_.get());
         if (!inf_result) {
             skip_reason_ = "Failed to load Mistral: " + inf_result.error().message;
             return;
         }
-        inference_ = std::make_unique<TinyLlamaInference>(std::move(*inf_result));
+        inference_ = std::make_unique<LlamaModel>(std::move(*inf_result));
 
         std::cout << "Loaded Mistral model: " << inference_->config().model_type
                   << " hidden=" << inference_->config().hidden_size
@@ -56,13 +56,13 @@ protected:
     static std::filesystem::path              model_dir_;
     static std::string                        skip_reason_;
     static std::unique_ptr<ComputeBackend>    backend_;
-    static std::unique_ptr<TinyLlamaInference> inference_;
+    static std::unique_ptr<LlamaModel> inference_;
 };
 
 std::filesystem::path               MistralIntegrationTest::model_dir_;
 std::string                         MistralIntegrationTest::skip_reason_;
 std::unique_ptr<ComputeBackend>     MistralIntegrationTest::backend_;
-std::unique_ptr<TinyLlamaInference> MistralIntegrationTest::inference_;
+std::unique_ptr<LlamaModel> MistralIntegrationTest::inference_;
 
 // Verify the model loads with correct Mistral architecture config
 TEST_F(MistralIntegrationTest, ConfigLoadsCorrectly) {

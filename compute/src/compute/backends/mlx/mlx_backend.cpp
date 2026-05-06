@@ -52,9 +52,6 @@ void MLXBackend::cleanup() {
     }
 }
 
-size_t MLXBackend::preferred_batch_size() const { return 1024; }
-bool MLXBackend::supports_async() const { return false; }
-
 } // namespace compute
 
 #endif // defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)

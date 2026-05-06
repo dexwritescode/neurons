@@ -9,13 +9,9 @@ namespace compute {
 enum class ErrorCode {
     Success,
     InvalidInput,
-    InvalidArgument,
     InvalidModel,
     BackendNotAvailable,
-    InsufficientMemory,
     ComputeError,
-    TensorNotFound,
-    NotImplemented,
     UnknownError
 };
 

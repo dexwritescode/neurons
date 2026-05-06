@@ -433,8 +433,9 @@ Qwen3MoeModelMLX::Qwen3MoeModelMLX(
     , tokenizer_(std::move(tokenizer))
     , mlx_weights_(std::move(mlx_weights))
     , embed_mat_(std::move(embed_mat))
-    , context_size_(context_size)
-{}
+{
+    (void)context_size;
+}
 
 size_t Qwen3MoeModelMLX::num_parameters() const {
     size_t total = 0;

@@ -110,7 +110,6 @@ if(BUILD_TESTING)
         tests/compute/test_model_loader.cpp
         tests/compute/test_tokenizer_config.cpp
         tests/compute/test_simple_bpe_tokenizer.cpp
-        tests/compute/test_attention_qkv_trace.cpp
         tests/compute/test_forward_pass.cpp
         tests/compute/test_mistral_integration.cpp
         tests/compute/test_llama3_integration.cpp

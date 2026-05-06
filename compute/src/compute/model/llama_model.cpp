@@ -333,7 +333,6 @@ void LlamaModel::mlx_setup(
 {
     mlx_weights_   = std::move(mlx_weights);
     mlx_embed_mat_ = std::move(mlx_embed_mat);
-    context_size_  = context_size;
 }
 
 void LlamaModel::mlx_init_state() {

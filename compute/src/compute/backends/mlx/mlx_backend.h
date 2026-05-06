@@ -20,9 +20,6 @@ public:
     Result<void> initialize() override;
     void cleanup() override;
 
-    size_t preferred_batch_size() const override;
-    bool supports_async() const override;
-
 private:
     bool m_initialized;
 };

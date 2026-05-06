@@ -78,7 +78,6 @@ private:
     std::unordered_map<std::string, mlx::core::array> mlx_weights_;
     mlx::core::array                                   mlx_embed_mat_;
     std::optional<MlxDecodeState>                      mlx_state_;
-    size_t                                             context_size_ = 0;
     size_t                                             mlx_pos_      = 0;
 
     void mlx_setup(std::unordered_map<std::string, mlx::core::array> mlx_weights,

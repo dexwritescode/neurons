@@ -21,10 +21,6 @@ public:
     // Lifecycle
     virtual Result<void> initialize() = 0;
     virtual void cleanup() = 0;
-
-    // Performance hints
-    virtual size_t preferred_batch_size() const { return 1024; }
-    virtual bool supports_async() const { return false; }
 };
 
 // Factory for creating backends

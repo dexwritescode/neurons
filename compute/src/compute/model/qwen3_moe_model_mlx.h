@@ -77,7 +77,6 @@ private:
     mlx::core::array                                  embed_mat_;
     std::optional<MlxDecodeState>                     mlx_state_;
     size_t                                            cache_position_ = 0;
-    size_t                                            context_size_   = 0;
 };
 
 } // namespace compute
