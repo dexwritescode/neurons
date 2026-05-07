@@ -11,12 +11,12 @@
 
 namespace compute {
 
-class Qwen3MoeIntegrationTest : public ::testing::Test {
+class Qwen3TransformerMoeIntegrationTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        model_dir_ = QWEN3MOE_MODEL_DIR;
+        model_dir_ = QWEN3_30B_MODEL_DIR;
         if (!std::filesystem::exists(model_dir_)) {
-            skip_reason_ = std::string("Qwen3.5 MoE model not found at ") + QWEN3MOE_MODEL_DIR
+            skip_reason_ = std::string("Qwen3-30B-A3B model not found at ") + QWEN3_30B_MODEL_DIR
                          + " — download mlx-community/Qwen3-30B-A3B-4bit first";
             return;
         }
@@ -28,7 +28,7 @@ protected:
 
         auto model_result = LanguageModel::load(model_dir_, backend_.get());
         if (!model_result) {
-            skip_reason_ = "Failed to load Qwen3 MoE: " + model_result.error().message;
+            skip_reason_ = "Failed to load Qwen3-30B: " + model_result.error().message;
             return;
         }
         model_ = std::move(*model_result);
@@ -56,18 +56,25 @@ protected:
     static std::unique_ptr<LanguageModel>  model_;
 };
 
-std::filesystem::path           Qwen3MoeIntegrationTest::model_dir_;
-std::string                     Qwen3MoeIntegrationTest::skip_reason_;
-std::unique_ptr<ComputeBackend> Qwen3MoeIntegrationTest::backend_;
-std::unique_ptr<LanguageModel>  Qwen3MoeIntegrationTest::model_;
+std::filesystem::path           Qwen3TransformerMoeIntegrationTest::model_dir_;
+std::string                     Qwen3TransformerMoeIntegrationTest::skip_reason_;
+std::unique_ptr<ComputeBackend> Qwen3TransformerMoeIntegrationTest::backend_;
+std::unique_ptr<LanguageModel>  Qwen3TransformerMoeIntegrationTest::model_;
 
-TEST_F(Qwen3MoeIntegrationTest, ConfigLoadsCorrectly) {
-    EXPECT_EQ(model_->model_type(), "qwen3_5_moe");
-    EXPECT_EQ(model_->config().num_hidden_layers, 40u);
-    std::cout << "✓ Qwen3 MoE config validated" << std::endl;
+TEST_F(Qwen3TransformerMoeIntegrationTest, ConfigLoadsCorrectly) {
+    EXPECT_EQ(model_->model_type(), "qwen3_moe");
+    EXPECT_EQ(model_->config().num_hidden_layers, 48u);
+    EXPECT_EQ(model_->config().hidden_size, 2048u);
+    EXPECT_EQ(model_->config().num_attention_heads, 32u);
+    EXPECT_EQ(model_->config().num_key_value_heads, 4u);
+    ASSERT_TRUE(model_->config().num_experts.has_value());
+    EXPECT_EQ(*model_->config().num_experts, 128u);
+    ASSERT_TRUE(model_->config().num_experts_per_tok.has_value());
+    EXPECT_EQ(*model_->config().num_experts_per_tok, 8u);
+    std::cout << "✓ Qwen3-30B-A3B config validated" << std::endl;
 }
 
-TEST_F(Qwen3MoeIntegrationTest, GenerateCapitalOfFrance) {
+TEST_F(Qwen3TransformerMoeIntegrationTest, GenerateCapitalOfFrance) {
     const std::string prompt =
         "<|im_start|>user\n"
         "What is the capital of France?<|im_end|>\n"
@@ -102,10 +109,11 @@ TEST_F(Qwen3MoeIntegrationTest, GenerateCapitalOfFrance) {
     EXPECT_TRUE(mentions_paris) << "Expected Paris, got: \"" << decoded << "\"";
 }
 
-TEST_F(Qwen3MoeIntegrationTest, GenerateThroughput) {
+TEST_F(Qwen3TransformerMoeIntegrationTest, GenerateThroughput) {
     const std::string prompt =
         "<|im_start|>user\n"
-        "What is the capital of France?<|im_end|>\n"
+        "Write a detailed paragraph about the history of France, "
+        "including the French Revolution, Napoleon, and the World Wars.<|im_end|>\n"
         "<|im_start|>assistant\n";
 
     auto token_ids = model_->tokenizer().encode(prompt, /*add_special_tokens=*/false);
@@ -129,11 +137,11 @@ TEST_F(Qwen3MoeIntegrationTest, GenerateThroughput) {
     ASSERT_GT(token_count, 0) << "Model produced no tokens";
 
     double tok_s = token_count * 1000.0 / elapsed_ms;
-    std::cout << "Qwen3.6 MoE 35B-A3B throughput: " << tok_s << " tok/s ("
+    std::cout << "Qwen3-30B-A3B throughput: " << tok_s << " tok/s ("
               << token_count << " tokens in " << elapsed_ms << " ms)" << std::endl;
 
-    // Baseline (debug build, warmed): ~23 tok/s. Floor = baseline / 2.
-    EXPECT_GE(tok_s, 11.0) << "throughput regression: " << tok_s << " tok/s";
+    // Baseline (release, warmed): ~26 tok/s. Floor = baseline / 2.
+    EXPECT_GE(tok_s, 13.0) << "throughput regression: " << tok_s << " tok/s";
 }
 
 } // namespace compute
