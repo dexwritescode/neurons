@@ -2,6 +2,7 @@
 #include "compute/model/llama_model.h"
 #include "compute/core/compute_backend.h"
 #include "test_config.h"
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -272,6 +273,38 @@ TEST_F(MistralIntegrationTest, GenerateCapitalOfFranceWithSampling) {
     for (char c : decoded_so_far) if (c >= 32 && c < 127) ++printable;
     float ratio = static_cast<float>(printable) / static_cast<float>(decoded_so_far.size());
     EXPECT_GT(ratio, 0.85f) << "Output contains too many non-printable chars";
+}
+
+TEST_F(MistralIntegrationTest, GenerateThroughput) {
+    const std::string prompt =
+        "[INST] Write a detailed paragraph about the history of France, "
+        "including the French Revolution, Napoleon, and the World Wars. [/INST]";
+    auto token_ids = inference_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
+    ASSERT_FALSE(token_ids.empty());
+
+    SamplingParams greedy;
+    greedy.temperature = 0.0f;
+    greedy.top_k = 0;
+
+    // Warmup: trigger mx::compile before measuring steady-state decode.
+    inference_->generate(token_ids, /*max_new_tokens=*/8, greedy, [](int) { return true; });
+
+    int token_count = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto result = inference_->generate(token_ids, /*max_new_tokens=*/128, greedy,
+        [&](int /*tok*/) { ++token_count; return true; });
+    double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_GT(token_count, 0) << "Model produced no tokens";
+
+    double tok_s = token_count * 1000.0 / elapsed_ms;
+    std::cout << "Mistral 7B throughput: " << tok_s << " tok/s ("
+              << token_count << " tokens in " << elapsed_ms << " ms)" << std::endl;
+
+    // Baseline (debug build, warmed): ~44 tok/s. Floor = baseline / 2.
+    EXPECT_GE(tok_s, 22.0) << "throughput regression: " << tok_s << " tok/s";
 }
 
 } // namespace compute

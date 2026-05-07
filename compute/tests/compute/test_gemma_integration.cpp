@@ -2,7 +2,9 @@
 #include <gmock/gmock.h>
 #include "../../src/compute/model/language_model.h"
 #include "../../src/compute/core/compute_backend.h"
+#include <chrono>
 #include <filesystem>
+#include <iostream>
 #include <string>
 
 namespace {
@@ -120,6 +122,40 @@ TEST_F(GemmaIntegrationTest, GenerateCapitalOfFrance) {
     ASSERT_TRUE(tokens.has_value()) << tokens.error().message;
 
     EXPECT_THAT(output, ::testing::HasSubstr("Paris"));
+}
+
+TEST_F(GemmaIntegrationTest, GenerateThroughput) {
+    const std::string prompt =
+        "<start_of_turn>user\n"
+        "Write a detailed paragraph about the history of France, "
+        "including the French Revolution, Napoleon, and the World Wars.<end_of_turn>\n"
+        "<start_of_turn>model\n";
+
+    auto ids = model_->tokenizer().encode(prompt, /*add_special_tokens=*/true);
+    ASSERT_FALSE(ids.empty());
+
+    compute::SamplingParams greedy;
+    greedy.temperature = 0.0f;
+
+    // Warmup: trigger mx::compile before measuring steady-state decode.
+    model_->generate(ids, /*max_new_tokens=*/8, greedy, [](int) { return true; });
+
+    int token_count = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto result = model_->generate(ids, /*max_new_tokens=*/128, greedy,
+        [&](int /*tok*/) { ++token_count; return true; });
+    double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_GT(token_count, 0) << "Model produced no tokens";
+
+    double tok_s = token_count * 1000.0 / elapsed_ms;
+    std::cout << "Gemma 3 1B throughput: " << tok_s << " tok/s ("
+              << token_count << " tokens in " << elapsed_ms << " ms)" << std::endl;
+
+    // Baseline (debug build, warmed): ~60 tok/s. Floor = baseline / 2.
+    EXPECT_GE(tok_s, 30.0) << "throughput regression: " << tok_s << " tok/s";
 }
 
 } // namespace
