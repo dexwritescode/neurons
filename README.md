@@ -61,7 +61,7 @@ The GUI never links C++ directly. Locally it calls `libneurons_core.dylib` over 
 | Mistral | `mlx-community/Mistral-7B-Instruct-v0.3-4bit` | MLX |
 | Qwen2 / Qwen2.5 / Qwen3 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | MLX |
 | Qwen3 MoE | `mlx-community/Qwen3-30B-A3B-4bit`, `mlx-community/Qwen3.6-35B-A3B-4bit` | MLX |
-| Gemma / Gemma2 / Gemma3 | `mlx-community/gemma-3-1b-it-qat-4bit` | MLX |
+| Gemma / Gemma2 / Gemma3 | `mlx-community/gemma-3-1b-it-qat-4bit`, `mlx-community/gemma-3-4b-it-qat-4bit` | MLX |
 | fp16 / bf16 unquantized | any base HuggingFace safetensors repo | MLX |
 
 All models are downloaded directly from HuggingFace in their `mlx-community` MLX-quantized variants for Apple Silicon. CUDA and ROCm backends are on the roadmap.
@@ -165,6 +165,7 @@ Measured on Apple Silicon (M2 Max 64 GB), greedy decoding (temperature=0), relea
 |---|---|---|---|
 | TinyLlama 1.1B 4-bit | 1.1B | 1.1B | ~265 |
 | Gemma 3 1B 4-bit | 1B | 1B | ~190 |
+| Gemma 3 4B 4-bit (QAT) | 4B | 4B | ~60 |
 | Llama-3.1 8B 4-bit | 8B | 8B | ~61 |
 | Mistral 7B 4-bit | 7B | 7B | ~57 |
 | Qwen3.6 35B-A3B 4-bit | 35B | 3.6B | ~77 |

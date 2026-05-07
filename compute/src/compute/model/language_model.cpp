@@ -28,7 +28,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
     }
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
-    if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text") {
+    if (model_type == "gemma" || model_type == "gemma2" || model_type == "gemma3_text" || model_type == "gemma3") {
         auto result = GemmaModelMLX::from_model_dir(model_dir);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<GemmaModelMLX>(std::move(*result));
@@ -49,7 +49,7 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
 
     return std::unexpected(Error{ErrorCode::InvalidModel,
         "Unsupported model type: \"" + model_type +
-        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, qwen3_5_moe, qwen3_moe"});
+        "\". Supported: llama, mistral, qwen2, qwen3, gemma, gemma2, gemma3_text, gemma3, qwen3_5_moe, qwen3_moe"});
 }
 
 } // namespace compute

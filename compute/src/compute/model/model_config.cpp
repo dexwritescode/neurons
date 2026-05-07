@@ -146,6 +146,7 @@ Result<ModelConfig> ModelConfig::from_json_string(const std::string& json_str) {
                 {"gemma",        "GemmaForCausalLM"},
                 {"gemma2",       "Gemma2ForCausalLM"},
                 {"gemma3_text",  "Gemma3ForCausalLM"},
+                {"gemma3",       "Gemma3ForCausalLM"},
             };
             auto it = kTypeToArch.find(config.model_type);
             if (it != kTypeToArch.end()) {
@@ -332,13 +333,14 @@ bool ModelConfig::is_qwen3_moe_architecture() const {
 }
 
 bool ModelConfig::is_gemma_architecture() const {
-    // model_type covers gemma (v1), gemma2, gemma3_text
-    if (model_type != "gemma" && model_type != "gemma2" && model_type != "gemma3_text")
+    // model_type covers gemma (v1), gemma2, gemma3_text, gemma3 (multimodal)
+    if (model_type != "gemma" && model_type != "gemma2" && model_type != "gemma3_text" && model_type != "gemma3")
         return false;
     for (const auto& arch : architectures) {
-        if (arch == "GemmaForCausalLM"  ||
-            arch == "Gemma2ForCausalLM" ||
-            arch == "Gemma3ForCausalLM")
+        if (arch == "GemmaForCausalLM"             ||
+            arch == "Gemma2ForCausalLM"            ||
+            arch == "Gemma3ForCausalLM"            ||
+            arch == "Gemma3ForConditionalGeneration")
             return true;
     }
     return false;
