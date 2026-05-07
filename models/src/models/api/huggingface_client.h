@@ -69,9 +69,6 @@ namespace http {
         virtual HttpResponse requestSyncWithProgress(const HttpRequest& request,
                                                      ProgressCallback progress) = 0;
 
-        // Cancel operations
-        virtual void cancelAll() = 0;
-        virtual bool cancelRequest(const std::string& url) = 0;
     };
 
     // Factory functions
@@ -203,7 +200,6 @@ private:
 
     // HTTP client management
     std::unique_ptr<http::HttpInterface> m_httpClient;
-    std::queue<http::HttpRequest> m_requestQueue;
     std::unordered_map<std::string, std::string> m_activeRequests; // request_id -> endpoint mapping
 
     // Configuration
@@ -240,14 +236,8 @@ private:
     std::vector<ModelInfo> parseSearchResponse(const std::string& jsonData);
     ModelInfo parseModelInfo(const std::string& jsonData);
     std::vector<FileInfo> parseFilesResponse(const std::string& jsonData);
-    std::string extractNextPageToken(const std::map<std::string, std::string>& headers);
-
     // Error handling
     void handleHttpError(int statusCode, const std::string& error, const std::string& endpoint);
-
-    // Request management
-    void queueRequest(const http::HttpRequest& request);
-    void processRequestQueue();
 
     // Download management methods (merged from ModelDownloader)
     void sortFilesBySize(std::vector<FileDownloadRequest>& files);

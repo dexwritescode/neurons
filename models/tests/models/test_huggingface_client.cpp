@@ -63,9 +63,6 @@ public:
         return requestSync(request);
     }
 
-    void cancelAll() override {}
-    bool cancelRequest(const std::string& url) override { (void)url; return false; }
-
     void setNextResponse(int statusCode, const std::string& data, const std::string& error = "") {
         nextResponse.statusCode = statusCode;
         nextResponse.data = data;
