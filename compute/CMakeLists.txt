@@ -17,7 +17,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     FetchContent_Declare(
         mlx
         GIT_REPOSITORY https://github.com/dexwritescode/mlx.git
-        GIT_TAG        0b6cedbbf4b945753b5a6ef17e3a5f8df9dacfc3
+        GIT_TAG        1109c8ce5b14801f000fef87cb9cb75b858f8ec4
     )
 
     set(MLX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -31,6 +31,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         list(APPEND BACKEND_SOURCES
             src/compute/backends/mlx/mlx_backend.cpp
             src/compute/model/qwen3_moe_model_mlx.cpp
+            src/compute/model/qwen3_transformer_moe_model_mlx.cpp
             src/compute/model/gemma_model_mlx.cpp
         )
         set(MLX_AVAILABLE TRUE)
@@ -87,7 +88,9 @@ if(BUILD_TESTING)
     set(QWEN2_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen2.5-3B-Instruct-4bit"
         CACHE STRING "Path to Qwen2.5 model for integration tests")
     set(QWEN3MOE_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen3.6-35B-A3B-4bit"
-        CACHE STRING "Path to Qwen3 MoE model for integration tests")
+        CACHE STRING "Path to Qwen3.6-35B MoE model for integration tests")
+    set(QWEN3_30B_MODEL_PATH "$ENV{HOME}/.neurons/models/mlx-community/Qwen3-30B-A3B-4bit"
+        CACHE STRING "Path to Qwen3-30B-A3B model for integration tests")
 
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/compute/test_config.h.in"
@@ -117,6 +120,7 @@ if(BUILD_TESTING)
         tests/compute/test_fp16bf16_integration.cpp
         tests/compute/test_gemma_integration.cpp
         tests/compute/test_qwen3_moe_integration.cpp
+        tests/compute/test_qwen3_transformer_moe_integration.cpp
         tests/compute/test_chat_template.cpp
     )
 

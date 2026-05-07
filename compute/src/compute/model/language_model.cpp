@@ -4,6 +4,7 @@
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include "qwen3_moe_model_mlx.h"
+#include "qwen3_transformer_moe_model_mlx.h"
 #include "gemma_model_mlx.h"
 #endif
 
@@ -33,10 +34,16 @@ Result<std::unique_ptr<LanguageModel>> LanguageModel::load(
         return std::make_unique<GemmaModelMLX>(std::move(*result));
     }
 
-    if (model_type == "qwen3_5_moe" || model_type == "qwen3_moe") {
+    if (model_type == "qwen3_5_moe") {
         auto result = Qwen3MoeModelMLX::from_model_dir(model_dir, context_size);
         if (!result) return std::unexpected(result.error());
         return std::make_unique<Qwen3MoeModelMLX>(std::move(*result));
+    }
+
+    if (model_type == "qwen3_moe") {
+        auto result = Qwen3TransformerMoeModelMLX::from_model_dir(model_dir, context_size);
+        if (!result) return std::unexpected(result.error());
+        return std::make_unique<Qwen3TransformerMoeModelMLX>(std::move(*result));
     }
 #endif
 
