@@ -72,17 +72,17 @@ All models are downloaded directly from HuggingFace in their `mlx-community` MLX
 
 ```mermaid
 graph TD
-    GUI["Flutter GUI (macOS)\ndart:ffi · gRPC"]
-    Core["libneurons_core\nC FFI surface · NeuronsServiceImpl"]
+    GUI["Flutter GUI (macOS) — dart:ffi · gRPC"]
+    Core["libneurons_core — C FFI · NeuronsServiceImpl"]
     LM["LanguageModel::load()"]
 
-    Llama["LlamaModel\nLlama 2/3 · Mistral · Qwen2/2.5/3"]
-    Gemma["GemmaModelMLX\nGemma / Gemma2 / Gemma3"]
-    Qwen3Moe["Qwen3MoeModelMLX\nQwen3 MoE — SSM + expert routing"]
+    Llama["LlamaModel — Llama 2/3 · Mistral · Qwen2/2.5/3"]
+    Gemma["GemmaModelMLX — Gemma / Gemma2 / Gemma3"]
+    Qwen3Moe["Qwen3MoeModelMLX — Qwen3 MoE"]
 
     Backend["ComputeBackend (interface)"]
-    MLX["MLXBackend\nApple Silicon · Metal · mx::compile"]
-    Roadmap["CUDA / ROCm\n(roadmap)"]
+    MLX["MLXBackend — Apple Silicon · Metal · mx::compile"]
+    Roadmap["CUDA / ROCm (roadmap)"]
 
     GUI --> Core
     Core --> LM
