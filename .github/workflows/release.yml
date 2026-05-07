@@ -12,7 +12,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: dexwritescode/release-on-merge-action@v1.1.0
+      - uses: dexwritescode/release-on-merge-action@v1.2.0
         with:
           initial-version: '0.1.0'
           version-increment-strategy: patch
