@@ -5,7 +5,7 @@
 [![GUI Test](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml/badge.svg)](https://github.com/dexwritescode/neurons/actions/workflows/gui-test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A from-scratch LLM inference engine and chat application. Built to understand how large language models actually work at the hardware level — using Metal/MLX, cuBLAS, and flash-attention directly rather than wrapping llama.cpp or Ollama.
+A from-scratch LLM inference engine and chat application. Built to understand how large language models actually work at the hardware level — using Metal/MLX directly rather than wrapping llama.cpp or Ollama.
 
 ---
 
@@ -59,38 +59,39 @@ The GUI never links C++ directly. Locally it calls `libneurons_core.dylib` over 
 |---|---|---|
 | Llama 2/3, TinyLlama | `mlx-community/Llama-3.2-3B-Instruct-4bit` | MLX |
 | Mistral | `mlx-community/Mistral-7B-Instruct-v0.3-4bit` | MLX |
-| Qwen2 / Qwen2.5 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | MLX |
+| Qwen2 / Qwen2.5 / Qwen3 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | MLX |
+| Qwen3 MoE | `mlx-community/Qwen3-30B-A3B-4bit`, `mlx-community/Qwen3.6-35B-A3B-4bit` | MLX |
 | Gemma / Gemma2 / Gemma3 | `mlx-community/gemma-3-1b-it-qat-4bit` | MLX |
 | fp16 / bf16 unquantized | any base HuggingFace safetensors repo | MLX |
 
-All models are downloaded directly from HuggingFace in their `mlx-community` MLX-quantized variants for Apple Silicon. CUDA (cuBLAS + flash-attention) and ROCm backends are on the roadmap.
+All models are downloaded directly from HuggingFace in their `mlx-community` MLX-quantized variants for Apple Silicon. CUDA and ROCm backends are on the roadmap.
 
 ---
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────┐
-│  Flutter GUI  (macOS / Windows / Linux / mobile)     │
-│  dart:ffi (local) · gRPC (remote nodes)              │
-└──────────────────────┬───────────────────────────────┘
-                       │ dart:ffi / gRPC
-┌──────────────────────▼───────────────────────────────┐
-│  libneurons_core  (C FFI surface)                    │
-│  NeuronsServiceImpl → LanguageModel::load()          │
-└──────────────────────┬───────────────────────────────┘
-                       │  LanguageModel (interface)
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-    LlamaModel     GemmaModel    (future)
-    Llama/Mistral  Gemma 1-3
-    Qwen2/2.5      GeGLU/QKV-norm
-          └────────────┬────────────┘
-                       │  ComputeBackend (interface)
-          ┌────────────┼────────────┬──────────────┐
-          ▼            ▼            ▼              ▼
-    MLXBackend    CUDABackend  ROCmBackend   CPUBackend
-    (done)        (roadmap)    (roadmap)     (roadmap)
+```mermaid
+graph TD
+    GUI["Flutter GUI (macOS)\ndart:ffi · gRPC"]
+    Core["libneurons_core\nC FFI surface · NeuronsServiceImpl"]
+    LM["LanguageModel::load()"]
+
+    Llama["LlamaModel\nLlama 2/3 · Mistral · Qwen2/2.5/3"]
+    Gemma["GemmaModelMLX\nGemma / Gemma2 / Gemma3"]
+    Qwen3Moe["Qwen3MoeModelMLX\nQwen3 MoE — SSM + expert routing"]
+
+    Backend["ComputeBackend (interface)"]
+    MLX["MLXBackend\nApple Silicon · Metal · mx::compile"]
+    Roadmap["CUDA / ROCm\n(roadmap)"]
+
+    GUI --> Core
+    Core --> LM
+    LM --> Llama
+    LM --> Gemma
+    LM --> Qwen3Moe
+    Llama & Gemma & Qwen3Moe --> Backend
+    Backend --> MLX
+    Backend -.-> Roadmap
 ```
 
 ---
@@ -153,6 +154,22 @@ make flutter-test  # run Flutter widget + unit tests
 make run           # build dylib + launch Flutter app (debug)
 make gui           # build dylib + Flutter macOS release app
 ```
+
+---
+
+## Performance
+
+Measured on Apple Silicon (M2 Max 64 GB), greedy decoding (temperature=0), release build:
+
+| Model | Params | Active params | tok/s |
+|---|---|---|---|
+| TinyLlama 1.1B 4-bit | 1.1B | 1.1B | ~265 |
+| Gemma 3 1B 4-bit | 1B | 1B | ~190 |
+| Llama-3.1 8B 4-bit | 8B | 8B | ~61 |
+| Mistral 7B 4-bit | 7B | 7B | ~57 |
+| Qwen3.6 35B-A3B 4-bit | 35B | 3.6B | ~77 |
+
+MoE models run near the speed of a dense 3-4B model because only a small fraction of parameters are active per token. Decode uses GPU-pipelined generation with `mx::compile` — the first generation per session incurs a one-time compilation cost.
 
 ---
 
@@ -249,15 +266,16 @@ Neurons/
 | Phase | Status | Description |
 |---|---|---|
 | A–E | ✅ | MLX backend, KV cache, sampling, Llama/Gemma/Qwen/Mistral |
-| F | ✅ | Model family support (fp16/bf16, Gemma3, Qwen2.5) |
+| F | ✅ | Model family support (fp16/bf16, Gemma3, Qwen2.5, Qwen3, Qwen3 MoE) |
 | G–I | ✅ | gRPC service, Flutter GUI, CLI, OpenAI HTTP, logging |
+| O | ✅ | MLX performance — GPU-pipelined decode, mx::compile, batched prefill |
 | J | 🚧 | File attach + RAG (embeddings, sqlite-vec) |
 | K | 🚧 | Multi-node: routing, speculative decoding, failover |
 | L.1–2 | ✅ | MCP client runtime — stdio/SSE transport, JSON-RPC 2.0, McpManager |
 | L.3 | ✅ | MCP gRPC extensions — server/permission RPCs, tool approval flow |
 | L.4–6 | 🚧 | MCP GUI — settings, permissions table, live approval prompt |
 | L.8 | 🚧 | Built-in MCP servers (filesystem, shell) |
-| B/C | 🚧 | CUDA (cuBLAS + flash-attention) and ROCm backends |
+| B/C | 🚧 | CUDA and ROCm backends |
 
 ---
 

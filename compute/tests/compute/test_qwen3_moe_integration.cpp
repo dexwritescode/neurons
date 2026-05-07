@@ -2,6 +2,7 @@
 #include "compute/model/language_model.h"
 #include "compute/core/compute_backend.h"
 #include "test_config.h"
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -99,6 +100,40 @@ TEST_F(Qwen3MoeIntegrationTest, GenerateCapitalOfFrance) {
     bool mentions_paris = decoded.find("Paris") != std::string::npos ||
                           decoded.find("paris") != std::string::npos;
     EXPECT_TRUE(mentions_paris) << "Expected Paris, got: \"" << decoded << "\"";
+}
+
+TEST_F(Qwen3MoeIntegrationTest, GenerateThroughput) {
+    const std::string prompt =
+        "<|im_start|>user\n"
+        "What is the capital of France?<|im_end|>\n"
+        "<|im_start|>assistant\n";
+
+    auto token_ids = model_->tokenizer().encode(prompt, /*add_special_tokens=*/false);
+    ASSERT_FALSE(token_ids.empty());
+
+    SamplingParams greedy;
+    greedy.temperature = 0.0f;
+    greedy.top_k = 0;
+
+    // Warmup: trigger mx::compile before measuring steady-state decode.
+    model_->generate(token_ids, /*max_new_tokens=*/8, greedy, [](int) { return true; });
+
+    int token_count = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto result = model_->generate(token_ids, /*max_new_tokens=*/128, greedy,
+        [&](int /*tok*/) { ++token_count; return true; });
+    double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_GT(token_count, 0) << "Model produced no tokens";
+
+    double tok_s = token_count * 1000.0 / elapsed_ms;
+    std::cout << "Qwen3 MoE 30B-A3B throughput: " << tok_s << " tok/s ("
+              << token_count << " tokens in " << elapsed_ms << " ms)" << std::endl;
+
+    // Baseline (debug build, warmed): ~23 tok/s. Floor = baseline / 2.
+    EXPECT_GE(tok_s, 11.0) << "throughput regression: " << tok_s << " tok/s";
 }
 
 } // namespace compute

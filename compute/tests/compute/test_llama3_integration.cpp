@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "compute/model/llama_model.h"
 #include "compute/core/compute_backend.h"
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -154,6 +155,44 @@ TEST_F(Llama3IntegrationTest, GenerateCapitalOfFrance) {
                            decoded_so_far.find("paris") != std::string::npos;
     EXPECT_TRUE(has_paris)
         << "Expected 'Paris' in output, got: \"" << decoded_so_far << "\"";
+}
+
+TEST_F(Llama3IntegrationTest, GenerateThroughput) {
+    const std::string prompt =
+        "<|begin_of_text|>"
+        "<|start_header_id|>system<|end_header_id|>\n\n"
+        "You are a helpful assistant.<|eot_id|>\n"
+        "<|start_header_id|>user<|end_header_id|>\n\n"
+        "Write a detailed paragraph about the history of France, "
+        "including the French Revolution, Napoleon, and the World Wars."
+        "<|eot_id|>\n"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n";
+
+    auto token_ids = inference_->tokenizer().encode(prompt, /*add_special_tokens=*/false);
+    ASSERT_FALSE(token_ids.empty());
+
+    SamplingParams greedy;
+    greedy.temperature = 0.0f;
+
+    // Warmup: trigger mx::compile before measuring steady-state decode.
+    inference_->generate(token_ids, /*max_new_tokens=*/8, greedy, [](int) { return true; });
+
+    int token_count = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto result = inference_->generate(token_ids, /*max_new_tokens=*/128, greedy,
+        [&](int /*tok*/) { ++token_count; return true; });
+    double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_GT(token_count, 0) << "Model produced no tokens";
+
+    double tok_s = token_count * 1000.0 / elapsed_ms;
+    std::cout << "Llama-3.1 8B throughput: " << tok_s << " tok/s ("
+              << token_count << " tokens in " << elapsed_ms << " ms)" << std::endl;
+
+    // Baseline (debug build, warmed): ~68 tok/s. Floor = baseline / 2.
+    EXPECT_GE(tok_s, 33.0) << "throughput regression: " << tok_s << " tok/s";
 }
 
 } // namespace compute
