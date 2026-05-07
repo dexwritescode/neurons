@@ -53,9 +53,8 @@ public:
     }
 
     ~CurlHttpClient() {
-        // Don't call curl_global_cleanup() here as other instances or threads might still be using CURL
-        // CURL cleanup should happen at program exit
-        // TODO: Implement proper cleanup strategy
+        // curl_global_cleanup() is intentionally omitted — other threads may still hold CURL handles.
+        // CURL global state is cleaned up at process exit by the OS.
     }
 
     void requestAsync(
@@ -147,16 +146,6 @@ public:
         curl_easy_cleanup(curl);
 
         return response;
-    }
-
-    void cancelAll() override {
-        // TODO: Implement cancellation
-    }
-
-    bool cancelRequest(const std::string& url) override {
-        (void)url;
-        // TODO: Implement specific request cancellation
-        return false;
     }
 
     // C-style callback for CURL write function
@@ -896,12 +885,6 @@ std::vector<FileInfo> HuggingFaceClient::parseFilesResponse(const std::string& j
     return files;
 }
 
-std::string HuggingFaceClient::extractNextPageToken(const std::map<std::string, std::string>& headers) {
-    (void)headers;
-    // TODO: Implement next page token extraction from headers
-    return "";
-}
-
 // Error handling
 void HuggingFaceClient::handleHttpError(int statusCode, const std::string& error, const std::string& endpoint) {
     m_lastError = "HTTP " + std::to_string(statusCode) + ": " + error;
@@ -910,17 +893,7 @@ void HuggingFaceClient::handleHttpError(int statusCode, const std::string& error
     }
 }
 
-// Request management
-void HuggingFaceClient::queueRequest(const http::HttpRequest& request) {
-    m_requestQueue.push(request);
-    processRequestQueue();
-}
-
-void HuggingFaceClient::processRequestQueue() {
-    // TODO: Implement rate limiting and queue processing
-}
-
-// Download management methods (placeholder implementations)
+// Download management methods
 void HuggingFaceClient::sortFilesBySize(std::vector<FileDownloadRequest>& files) {
     std::sort(files.begin(), files.end(),
         [](const FileDownloadRequest& a, const FileDownloadRequest& b) {
