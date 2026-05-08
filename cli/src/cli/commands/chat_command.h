@@ -30,6 +30,8 @@ private:
     int   top_k_       = 40;
     float top_p_       = 0.9f;
     float rep_penalty_ = 1.1f;
+    bool  tools_enabled_ = false;
+    std::vector<std::string> tool_servers_;
 
     NeuronsConfig* config_;
     std::unique_ptr<models::registry::ModelRegistry> model_registry_;
