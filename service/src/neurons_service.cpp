@@ -633,6 +633,19 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
 
     // Encode the initial prompt with BOS; tool injections are appended without BOS.
     std::vector<int> all_tokens = tok.encode(base_prompt, /*add_special_tokens=*/true);
+
+    // Inject client-supplied tool results (remote-node / client-side tool execution).
+    // The service formats each entry using the model's family-specific syntax so
+    // callers never need to know how to wrap tool output.
+    for (int i = 0; i < req.tool_results_size(); ++i) {
+        const auto& tr    = req.tool_results(i);
+        const auto  text  = mdl->format_tool_result(tr.name(), tr.result_json());
+        if (!text.empty()) {
+            const auto injected = tok.encode(text, /*add_special_tokens=*/false);
+            all_tokens.insert(all_tokens.end(), injected.begin(), injected.end());
+        }
+    }
+
     if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(all_tokens.size());
 
     // If no explicit callback provided, wire MCP tools when available.

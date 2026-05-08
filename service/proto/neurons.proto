@@ -99,6 +99,14 @@ message SamplingParams {
   int32 context_window = 6;  // Max tokens of context to include (0 = model max)
 }
 
+// A tool result to inject into the prompt before generation begins.
+// Used by remote-node clients that execute tools client-side and send the
+// structured result back for the service to format using the model's syntax.
+message ToolResult {
+  string name        = 1;  // Tool name (must match the prior tool call)
+  string result_json = 2;  // JSON string returned by the tool executor
+}
+
 message GenerateRequest {
   // Conversation history (all prior turns). The service applies the
   // model's chat template to format the full prompt.
@@ -124,6 +132,12 @@ message GenerateRequest {
   // When not set, tool use is enabled automatically if the model supports it
   // and MCP servers are available.
   optional bool tool_use_enabled = 6;
+
+  // Tool results to inject before generation begins (remote-node / client-side
+  // tool execution). The service formats each entry using
+  // model->format_tool_result(name, result_json) and appends the tokens after
+  // the base prompt. Ordering matches the tool calls that preceded this request.
+  repeated ToolResult tool_results = 7;
 }
 
 // ── Tool events (interleaved in the Generate stream) ─────────────────────────
