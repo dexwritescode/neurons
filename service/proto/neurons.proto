@@ -110,13 +110,20 @@ message GenerateRequest {
   // Sampling configuration. If omitted, service defaults apply.
   SamplingParams params = 3;
 
-  // MCP server names to activate for this generation (must be configured on
-  // the node). Empty = no tool use even if model supports it.
+  // MCP server names to restrict tool use to for this generation. Non-empty =
+  // only tools from these servers are visible to the model. Empty = all
+  // registered servers are available (subject to tool_use_enabled).
   repeated string active_mcp_servers = 4;
 
   // Chat session ID — used to scope session-level permission overrides and
   // per-chat permission rules.
   string session_id = 5;
+
+  // Explicit tool-use toggle. When false, tool use is disabled for this
+  // request regardless of registered MCP servers or model capability.
+  // When not set, tool use is enabled automatically if the model supports it
+  // and MCP servers are available.
+  optional bool tool_use_enabled = 6;
 }
 
 // ── Tool events (interleaved in the Generate stream) ─────────────────────────

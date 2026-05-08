@@ -250,22 +250,28 @@ void McpManager::rebuild_tool_map_locked() {
     }
 }
 
-std::vector<ToolDef> McpManager::list_tools() {
+std::vector<ToolDef> McpManager::list_tools(const std::vector<std::string>& server_filter) {
     std::lock_guard lock(mutex_);
+    const bool filtered = !server_filter.empty();
+    auto allowed = [&](const std::string& name) {
+        if (!filtered) return true;
+        return std::find(server_filter.begin(), server_filter.end(), name) != server_filter.end();
+    };
     std::vector<ToolDef> all;
-    // Built-in tools first.
     for (const auto& cfg : builtin_configs_) {
-        if (!cfg.enabled) continue;
+        if (!cfg.enabled || !allowed(cfg.name)) continue;
         for (const auto& t : builtin_tool_defs_)
             if (t.server_name == cfg.name) all.push_back(t);
     }
-    // External MCP client tools.
-    for (auto& [name, client] : clients_) client->list_tools(all);
+    for (auto& [name, client] : clients_) {
+        if (!allowed(name)) continue;
+        client->list_tools(all);
+    }
     return all;
 }
 
-std::string McpManager::tools_json() {
-    const auto tools = list_tools();
+std::string McpManager::tools_json(const std::vector<std::string>& server_filter) {
+    const auto tools = list_tools(server_filter);
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& t : tools) {
         nlohmann::json tool;
@@ -281,11 +287,17 @@ std::string McpManager::tools_json() {
     return arr.dump();
 }
 
-bool McpManager::has_active_tools() const {
+bool McpManager::has_active_tools(const std::vector<std::string>& server_filter) const {
     std::lock_guard lock(mutex_);
-    if (!clients_.empty()) return true;
+    const bool filtered = !server_filter.empty();
+    auto allowed = [&](const std::string& name) {
+        if (!filtered) return true;
+        return std::find(server_filter.begin(), server_filter.end(), name) != server_filter.end();
+    };
     for (const auto& cfg : builtin_configs_)
-        if (cfg.enabled) return true;
+        if (cfg.enabled && allowed(cfg.name)) return true;
+    for (const auto& [name, _] : clients_)
+        if (allowed(name)) return true;
     return false;
 }
 
@@ -497,10 +509,11 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
 
 // ── Tool call callback ────────────────────────────────────────────────────────
 
-ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
-                                          const std::string& chat_id,
-                                          ApprovalCb         approval_cb) {
-    return [this, session_id, chat_id, approval_cb](
+ToolCallCb McpManager::make_tool_call_cb(const std::string&              session_id,
+                                          const std::string&              chat_id,
+                                          ApprovalCb                      approval_cb,
+                                          const std::vector<std::string>& server_filter) {
+    return [this, session_id, chat_id, approval_cb, server_filter](
                const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
 
         // Look up which server owns this tool.
@@ -512,6 +525,13 @@ ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
             if (it != tool_to_server_.end()) {
                 tool_found  = true;
                 server_name = it->second;
+            }
+        }
+        // If a server filter is active, reject tools from unlisted servers.
+        if (tool_found && !server_filter.empty()) {
+            if (std::find(server_filter.begin(), server_filter.end(), server_name)
+                    == server_filter.end()) {
+                return R"({"error":"Tool server not in active_mcp_servers for this request"})";
             }
         }
         if (!tool_found) {

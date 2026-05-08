@@ -84,9 +84,9 @@ public:
 
     // ── Tool queries ──────────────────────────────────────────────────────────
 
-    std::vector<ToolDef> list_tools();
-    std::string          tools_json();
-    bool                 has_active_tools() const;
+    std::vector<ToolDef> list_tools(const std::vector<std::string>& server_filter = {});
+    std::string          tools_json(const std::vector<std::string>& server_filter = {});
+    bool                 has_active_tools(const std::vector<std::string>& server_filter = {}) const;
 
     // ── Permission rules ──────────────────────────────────────────────────────
 
@@ -107,9 +107,10 @@ public:
 
     // ── Tool call callback ────────────────────────────────────────────────────
 
-    ToolCallCb make_tool_call_cb(const std::string& session_id = "",
-                                 const std::string& chat_id    = "",
-                                 ApprovalCb         approval_cb = nullptr);
+    ToolCallCb make_tool_call_cb(const std::string&              session_id    = "",
+                                 const std::string&              chat_id       = "",
+                                 ApprovalCb                      approval_cb   = nullptr,
+                                 const std::vector<std::string>& server_filter = {});
 
     // ── Tool hooks ────────────────────────────────────────────────────────────
 
