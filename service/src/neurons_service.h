@@ -179,7 +179,8 @@ private:
     // (caller computes as context_window - max_tokens). 0 = char-based fallback.
     std::string build_prompt(const compute::LanguageModel& model,
                              const neurons::GenerateRequest& req,
-                             int token_budget = 0) const;
+                             int token_budget = 0,
+                             const std::string& tool_system = {}) const;
 
     // Pending tool-approval futures: approval_id → promise<approved>
     // Written by Generate (blocking on future.get()), resolved by RespondToolApproval.
