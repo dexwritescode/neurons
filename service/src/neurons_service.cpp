@@ -228,12 +228,15 @@ static int trim_blocks_to_budget(const compute::SimpleBpeTokenizer& tok,
 
 std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
                                               const neurons::GenerateRequest& req,
-                                              int token_budget) const {
+                                              int token_budget,
+                                              const std::string& tool_system) const {
     const std::string& type  = mdl.model_type();
     const auto&        tok   = mdl.tokenizer();
     const bool is_llama3     = (type == "llama") &&
         (tok.find_token_id("<|start_header_id|>") != -1);
-    const std::string system = "You are a helpful assistant.";
+    std::string system = "You are a helpful assistant.";
+    if (!tool_system.empty())
+        system += "\n\n" + tool_system;
     const int max_chars      = 6000;
 
     // Collect history as user/assistant pairs.
@@ -570,7 +573,10 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
     const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 
-    const std::string base_prompt = build_prompt(*mdl, req, tok_budget);
+    const std::string tool_system = (mcp_manager_.has_active_tools() && mdl->supports_tool_use())
+        ? mdl->format_tool_system_prompt(mcp_manager_.tools_json())
+        : std::string{};
+    const std::string base_prompt = build_prompt(*mdl, req, tok_budget, tool_system);
     const auto& tok = mdl->tokenizer();
 
     compute::SamplingParams params;
