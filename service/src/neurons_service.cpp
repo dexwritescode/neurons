@@ -573,8 +573,17 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
     const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 
-    const std::string tool_system = (mcp_manager_.has_active_tools() && mdl->supports_tool_use())
-        ? mdl->format_tool_system_prompt(mcp_manager_.tools_json())
+    // Resolve tool-use preference: explicit toggle overrides auto-detection.
+    const bool tools_explicitly_disabled =
+        req.has_tool_use_enabled() && !req.tool_use_enabled();
+    const std::vector<std::string> server_filter(
+        req.active_mcp_servers().begin(), req.active_mcp_servers().end());
+    const bool tools_available = !tools_explicitly_disabled
+        && mcp_manager_.has_active_tools(server_filter)
+        && mdl->supports_tool_use();
+
+    const std::string tool_system = tools_available
+        ? mdl->format_tool_system_prompt(mcp_manager_.tools_json(server_filter))
         : std::string{};
     const std::string base_prompt = build_prompt(*mdl, req, tok_budget, tool_system);
     const auto& tok = mdl->tokenizer();
@@ -594,10 +603,10 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     std::vector<int> all_tokens = tok.encode(base_prompt, /*add_special_tokens=*/true);
     if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(all_tokens.size());
 
-    // If no explicit callback provided, use the McpManager if tools are available.
-    if (!tool_cb && mcp_manager_.has_active_tools() && mdl->supports_tool_use()) {
+    // If no explicit callback provided, wire MCP tools when available.
+    if (!tool_cb && tools_available) {
         const std::string chat_id = req.session_id();
-        tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb);
+        tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb, server_filter);
     }
     const bool can_use_tools = (tool_cb != nullptr) && mdl->supports_tool_use();
     static constexpr int kMaxToolTurns = 5;
