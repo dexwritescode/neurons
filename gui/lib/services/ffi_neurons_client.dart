@@ -505,6 +505,8 @@ class FfiNeuronsClient implements NeuronsClient {
     SamplingParams? params,
     List<String> activeMcpServers = const [],
     String sessionId = '',
+    bool toolUseEnabled = false,
+    bool allowShellFallback = false,
   }) {
     final ctrl = StreamController<GenerateResponse>();
     final port = ReceivePort();

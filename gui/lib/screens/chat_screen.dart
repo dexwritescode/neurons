@@ -168,6 +168,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 mcpServers: state.mcpServers,
                 activeServerNames: state.activeServerNames,
                 onToggleServer: state.toggleActiveServer,
+                toolUseEnabled: state.toolUseEnabled,
+                allowShellFallback: state.allowShellFallback,
+                onToggleToolUse: state.toggleToolUseEnabled,
+                onToggleShellFallback: state.toggleAllowShellFallback,
               ),
             ],
           ),
@@ -780,6 +784,10 @@ class _InputBar extends StatelessWidget {
     this.mcpServers = const [],
     this.activeServerNames = const {},
     this.onToggleServer,
+    this.toolUseEnabled = false,
+    this.allowShellFallback = false,
+    this.onToggleToolUse,
+    this.onToggleShellFallback,
   });
 
   final TextEditingController controller;
@@ -791,6 +799,10 @@ class _InputBar extends StatelessWidget {
   final List<McpServerConfig> mcpServers;
   final Set<String> activeServerNames;
   final void Function(String)? onToggleServer;
+  final bool toolUseEnabled;
+  final bool allowShellFallback;
+  final VoidCallback? onToggleToolUse;
+  final VoidCallback? onToggleShellFallback;
 
   void _showToolsSheet(BuildContext context) {
     showModalBottomSheet(
@@ -804,6 +816,10 @@ class _InputBar extends StatelessWidget {
           mcpServers: state.mcpServers,
           activeServerNames: state.activeServerNames,
           onToggle: state.toggleActiveServer,
+          toolUseEnabled: state.toolUseEnabled,
+          allowShellFallback: state.allowShellFallback,
+          onToggleToolUse: state.toggleToolUseEnabled,
+          onToggleShellFallback: state.toggleAllowShellFallback,
         ),
       ),
     );
@@ -1151,10 +1167,18 @@ class _ToolsSheet extends StatelessWidget {
     required this.mcpServers,
     required this.activeServerNames,
     required this.onToggle,
+    required this.toolUseEnabled,
+    required this.allowShellFallback,
+    required this.onToggleToolUse,
+    required this.onToggleShellFallback,
   });
   final List<McpServerConfig> mcpServers;
   final Set<String> activeServerNames;
   final void Function(String) onToggle;
+  final bool toolUseEnabled;
+  final bool allowShellFallback;
+  final VoidCallback onToggleToolUse;
+  final VoidCallback onToggleShellFallback;
 
   @override
   Widget build(BuildContext context) {
@@ -1182,27 +1206,56 @@ class _ToolsSheet extends StatelessWidget {
             ),
           ),
           const Divider(height: 1, color: Tokens.glassEdge),
-          ...mcpServers.map((server) {
-            final active = activeServerNames.contains(server.name);
-            return SwitchListTile(
-              value: active,
-              onChanged: server.enabled ? (v) => onToggle(server.name) : null,
-              title: Text(
-                server.name,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: server.enabled ? Tokens.textPrimary : Tokens.textMuted,
+          SwitchListTile(
+            value: toolUseEnabled,
+            onChanged: (_) => onToggleToolUse(),
+            title: const Text('Enable tool use',
+                style: TextStyle(fontSize: 13, color: Tokens.textPrimary)),
+            subtitle: const Text('Model can call registered MCP tools',
+                style: TextStyle(fontSize: 11, color: Tokens.textMuted)),
+            activeColor: Tokens.accent,
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          ),
+          if (toolUseEnabled && mcpServers.isNotEmpty) ...[
+            const Divider(height: 1, color: Tokens.glassEdge),
+            ...mcpServers.map((server) {
+              final active = activeServerNames.contains(server.name);
+              return SwitchListTile(
+                value: active,
+                onChanged: server.enabled ? (v) => onToggle(server.name) : null,
+                title: Text(
+                  server.name,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: server.enabled ? Tokens.textPrimary : Tokens.textMuted,
+                  ),
                 ),
-              ),
-              subtitle: Text(
-                server.transport.toUpperCase(),
-                style: const TextStyle(fontSize: 11, color: Tokens.textMuted),
-              ),
+                subtitle: Text(
+                  server.transport.toUpperCase(),
+                  style: const TextStyle(fontSize: 11, color: Tokens.textMuted),
+                ),
+                activeColor: Tokens.accent,
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+              );
+            }),
+          ],
+          if (toolUseEnabled) ...[
+            const Divider(height: 1, color: Tokens.glassEdge),
+            SwitchListTile(
+              value: allowShellFallback,
+              onChanged: (_) => onToggleShellFallback(),
+              title: const Text('Allow unregistered commands',
+                  style: TextStyle(fontSize: 13, color: Tokens.textPrimary)),
+              subtitle: const Text(
+                  'Model can run commands not listed as MCP tools (always prompts for approval)',
+                  style: TextStyle(fontSize: 11, color: Tokens.textMuted)),
               activeColor: Tokens.accent,
               dense: true,
               contentPadding: const EdgeInsets.symmetric(horizontal: 18),
-            );
-          }),
+            ),
+          ],
           const SizedBox(height: 8),
         ],
       ),

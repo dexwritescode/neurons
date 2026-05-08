@@ -12,6 +12,8 @@ class ChatSession {
     required this.createdAt,
     List<ConversationMessage>? messages,
     Set<String>? activeServerNames,
+    this.toolUseEnabled = false,
+    this.allowShellFallback = false,
   })  : messages = messages ?? [],
         activeServerNames = activeServerNames ?? {};
 
@@ -35,6 +37,8 @@ class ChatSession {
         activeServerNames: Set<String>.from(
             (json['activeServerNames'] as List<dynamic>? ?? [])
                 .cast<String>()),
+        toolUseEnabled: json['toolUseEnabled'] as bool? ?? false,
+        allowShellFallback: json['allowShellFallback'] as bool? ?? false,
       );
 
   String id;
@@ -42,6 +46,8 @@ class ChatSession {
   final DateTime createdAt;
   final List<ConversationMessage> messages;
   final Set<String> activeServerNames;
+  bool toolUseEnabled;
+  bool allowShellFallback;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -51,6 +57,8 @@ class ChatSession {
             .map((m) => {'role': m.role, 'content': m.content})
             .toList(),
         'activeServerNames': activeServerNames.toList(),
+        'toolUseEnabled': toolUseEnabled,
+        'allowShellFallback': allowShellFallback,
       };
 
   static String _newId() =>

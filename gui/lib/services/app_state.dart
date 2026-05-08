@@ -418,6 +418,21 @@ class AppState extends ChangeNotifier {
     unawaited(_chatRepo.save(_activeSession));
   }
 
+  bool get toolUseEnabled => _activeSession.toolUseEnabled;
+  bool get allowShellFallback => _activeSession.allowShellFallback;
+
+  void toggleToolUseEnabled() {
+    _activeSession.toolUseEnabled = !_activeSession.toolUseEnabled;
+    notifyListeners();
+    unawaited(_chatRepo.save(_activeSession));
+  }
+
+  void toggleAllowShellFallback() {
+    _activeSession.allowShellFallback = !_activeSession.allowShellFallback;
+    notifyListeners();
+    unawaited(_chatRepo.save(_activeSession));
+  }
+
   // ── Undo ──────────────────────────────────────────────────────────────────
   /// Single-level undo snapshot for delete/truncate operations.
   List<ConversationMessage>? _undoSnapshot;
@@ -754,6 +769,8 @@ class AppState extends ChangeNotifier {
         params: params,
         activeMcpServers: _activeSession.activeServerNames.toList(),
         sessionId: _activeSession.id,
+        toolUseEnabled: _activeSession.toolUseEnabled,
+        allowShellFallback: _activeSession.allowShellFallback,
       );
 
       _generateCompleter = Completer<void>();
