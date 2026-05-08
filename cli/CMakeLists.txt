@@ -106,6 +106,8 @@ add_executable(cli
     src/cli/commands/node_command.cpp
     src/cli/commands/chat_command.h
     src/cli/commands/chat_command.cpp
+    src/cli/commands/remote_node_runner.h
+    src/cli/commands/remote_node_runner.cpp
     src/cli/commands/server_command.h
     src/cli/commands/server_command.cpp
     src/cli/commands/mcp_command.h
@@ -161,6 +163,13 @@ endif()
 target_link_libraries(cli PRIVATE model_manager)
 target_link_libraries(cli PRIVATE compute_backend)
 target_link_libraries(cli PRIVATE ftxui::component ftxui::dom ftxui::screen)
+
+# Remote node support: link neurons_proto (which pulls in gRPC and protobuf)
+# when the service subdirectory was included (gRPC found at the top level).
+if(TARGET neurons_proto)
+    target_link_libraries(cli PRIVATE neurons_proto)
+    target_compile_definitions(cli PRIVATE NEURONS_REMOTE_ENABLED)
+endif()
 
 if(nlohmann_json_FOUND)
     target_link_libraries(cli PRIVATE nlohmann_json::nlohmann_json)

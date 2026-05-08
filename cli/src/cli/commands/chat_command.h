@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "base_command.h"
+#include "remote_node_runner.h"
 #include "models/registry/model_registry.h"
 #include "cli/config/neurons_config.h"
 
@@ -32,6 +33,7 @@ private:
     float rep_penalty_ = 1.1f;
     bool  tools_enabled_ = false;
     std::vector<std::string> tool_servers_;
+    std::string node_endpoint_;  // empty = local inference; set via --node
 
     NeuronsConfig* config_;
     std::unique_ptr<models::registry::ModelRegistry> model_registry_;

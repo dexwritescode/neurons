@@ -31,15 +31,17 @@ else()
     message(STATUS "  Windows: vcpkg install grpc")
 endif()
 
-# Add subdirectories in dependency order
+# Add subdirectories in dependency order.
+# Service is added before CLI so neurons_proto is defined when CLI links it.
 add_subdirectory(compute)
 add_subdirectory(models)
-add_subdirectory(cli)
 
-# gRPC inference service — optional
+# gRPC inference service — optional; must come before cli so neurons_proto exists
 if(gRPC_FOUND AND Protobuf_FOUND)
     add_subdirectory(service)
 endif()
+
+add_subdirectory(cli)
 
 # Convenience targets for selective building
 add_custom_target(compute-only DEPENDS compute_backend)

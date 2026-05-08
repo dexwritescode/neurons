@@ -30,29 +30,13 @@ namespace {
 int show_tool_approval_ui(const neurons_service::ToolApprovalRequest& req) {
     using namespace ftxui;
 
-    // Build a human-readable command string from the args JSON.
-    std::string cmd;
+    std::string cmd = req.tool;
     try {
         auto args = nlohmann::json::parse(req.args_json);
-        if      (req.tool == "read_file"        && args.contains("path"))
-            cmd = "cat " + args["path"].get<std::string>();
-        else if (req.tool == "write_file"       && args.contains("path"))
-            cmd = "write " + args["path"].get<std::string>();
-        else if (req.tool == "run_command"      && args.contains("command"))
-            cmd = args["command"].get<std::string>();
-        else if (req.tool == "list_directory"   && args.contains("path"))
-            cmd = "ls " + args["path"].get<std::string>();
-        else if (req.tool == "create_directory" && args.contains("path"))
-            cmd = "mkdir -p " + args["path"].get<std::string>();
-        else if (req.tool == "move_file" && args.contains("source") && args.contains("destination"))
-            cmd = "mv " + args["source"].get<std::string>() + " " + args["destination"].get<std::string>();
-        else {
-            cmd = req.tool;
-            for (auto& [k, v] : args.items())
-                if (v.is_string()) cmd += " " + v.get<std::string>();
-        }
+        for (auto& [k, v] : args.items())
+            if (v.is_string()) cmd += " " + v.get<std::string>();
     } catch (...) {
-        cmd = req.tool + " " + req.args_json;
+        cmd += " " + req.args_json;
     }
 
     std::vector<std::string> entries = {
@@ -111,10 +95,13 @@ ChatCommand::ChatCommand(NeuronsConfig* config) : config_(config) {
 void ChatCommand::setup_command(CLI::App& app) {
     auto* cmd = app.add_subcommand(command_name_, description_);
 
-    cmd->add_option("model", model_name_, "Model name (e.g., mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit)")
-        ->required();
+    cmd->add_option("model", model_name_,
+        "Model name for local inference (e.g., mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit); "
+        "omit when using --node");
+    cmd->add_option("--node,-n", node_endpoint_,
+        "Remote node name (from 'neurons node list') or gRPC URL (host:port or grpc://host:port)");
     cmd->add_option("--system,-s", system_prompt_, "System prompt");
-    cmd->add_option("--max-tokens", max_tokens_, "Max tokens per turn (default: 512)");
+    cmd->add_option("--max-tokens", max_tokens_, "Max tokens per turn (default: 4096)");
     cmd->add_option("--temperature", temperature_, "Sampling temperature (default: 0.7)");
     cmd->add_option("--top-k", top_k_, "Top-k sampling (default: 40)");
     cmd->add_option("--top-p", top_p_, "Top-p sampling (default: 0.9)");
@@ -127,6 +114,42 @@ void ChatCommand::setup_command(CLI::App& app) {
 }
 
 int ChatCommand::execute() {
+    if (!node_endpoint_.empty()) {
+        // Resolve node name → host:port, or strip grpc:// scheme from a URL.
+        std::string endpoint = node_endpoint_;
+        if (endpoint.rfind("grpc://", 0) == 0) {
+            endpoint = endpoint.substr(7);
+        } else if (endpoint.find(':') == std::string::npos) {
+            // Looks like a node name — look it up in config.
+            auto node = config_->findNode(endpoint);
+            if (!node) {
+                std::cerr << "Error: Node '" << endpoint << "' not found.\n";
+                std::cerr << "Run 'neurons node list' to see available nodes.\n";
+                return 1;
+            }
+            endpoint = node->host + ":" + std::to_string(node->port);
+        }
+
+        RemoteNodeRunner::Options opts;
+        opts.endpoint      = endpoint;
+        opts.system_prompt = system_prompt_;
+        opts.max_tokens    = max_tokens_;
+        opts.temperature   = temperature_;
+        opts.top_k         = top_k_;
+        opts.top_p         = top_p_;
+        opts.rep_penalty   = rep_penalty_;
+        opts.tools_enabled = tools_enabled_;
+        opts.tool_servers  = tool_servers_;
+        return RemoteNodeRunner(std::move(opts)).run_repl();
+    }
+
+    // Local inference — model argument is required.
+    if (model_name_.empty()) {
+        std::cerr << "Error: 'model' argument is required for local inference.\n";
+        std::cerr << "Pass --node to connect to a remote service instead.\n";
+        return 1;
+    }
+
     const auto location = model_registry_->locateModel(model_name_);
     if (!location.isValid()) {
         std::cerr << "Error: Model '" << model_name_ << "' not found in "
