@@ -650,8 +650,10 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
 
     // If no explicit callback provided, wire MCP tools when available.
     if (!tool_cb && tools_available) {
-        const std::string chat_id = req.session_id();
-        tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb, server_filter);
+        const std::string chat_id        = req.session_id();
+        const bool        shell_fallback = req.allow_shell_fallback();
+        tool_cb = mcp_manager_.make_tool_call_cb(
+            session_id, chat_id, approval_cb, server_filter, shell_fallback);
     }
     auto run_result = compute::ToolRunner{}.run(
         *mdl, std::move(all_tokens), static_cast<size_t>(n_max), params,

@@ -520,8 +520,9 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
 ToolCallCb McpManager::make_tool_call_cb(const std::string&              session_id,
                                           const std::string&              chat_id,
                                           ApprovalCb                      approval_cb,
-                                          const std::vector<std::string>& server_filter) {
-    return [this, session_id, chat_id, approval_cb, server_filter](
+                                          const std::vector<std::string>& server_filter,
+                                          bool                            allow_shell_fallback) {
+    return [this, session_id, chat_id, approval_cb, server_filter, allow_shell_fallback](
                const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
 
         // Look up which server owns this tool.
@@ -543,12 +544,57 @@ ToolCallCb McpManager::make_tool_call_cb(const std::string&              session
             }
         }
         if (!tool_found) {
-            // Unknown tool — still check for an explicit deny rule so callers can
-            // block unknown tools via a wildcard rule without getting an error string.
+            // Unknown tool — check for an explicit deny rule first.
             const std::string early = resolve_permission(
                 "", call.name, call.arguments_json, session_id, chat_id);
             if (early == "always_deny") return std::nullopt;
-            return R"({"error":"Tool not found on any connected MCP server"})";
+
+            // Fallback: route through neurons-shell run_command when the caller
+            // explicitly opted in via allow_shell_fallback. Skipped when the flag
+            // is off or neurons-shell is absent.
+            if (!allow_shell_fallback) {
+                return R"({"error":"Tool not found on any connected MCP server"})";
+            }
+            {
+                std::lock_guard lock(mutex_);
+                if (!builtin_handlers_.count("neurons-shell")) {
+                    return R"({"error":"Tool not found on any connected MCP server"})";
+                }
+            }
+
+            // Build the shell command: tool_name + space-joined string arg values.
+            std::string command = call.name;
+            try {
+                auto j = nlohmann::json::parse(call.arguments_json);
+                for (auto& [k, v] : j.items())
+                    if (v.is_string()) command += " " + v.get<std::string>();
+            } catch (...) {}
+            const std::string shell_args = nlohmann::json{{"command", command}}.dump();
+
+            // Permission check against neurons-shell/run_command.
+            const std::string shell_perm = resolve_permission(
+                "neurons-shell", "run_command", shell_args, session_id, chat_id);
+            if (shell_perm == "always_deny") return std::nullopt;
+
+            if (shell_perm == "always_ask") {
+                if (!approval_cb) return std::nullopt;
+
+                ToolApprovalRequest req;
+                req.approval_id = [] {
+                    static std::atomic<uint64_t> counter{0};
+                    return "approval-" + std::to_string(++counter);
+                }();
+                req.server      = "neurons-shell";
+                req.tool        = call.name;   // show original tool name in the UI
+                req.args_json   = call.arguments_json;
+                req.description = "Run: " + command;
+                req.destructive = true;
+
+                auto future = approval_cb(req);
+                if (!future.get()) return std::nullopt;
+            }
+
+            return dispatch_tool("neurons-shell", "run_command", shell_args);
         }
 
         const std::string perm = resolve_permission(

@@ -31,7 +31,8 @@ private:
     int   top_k_       = 40;
     float top_p_       = 0.9f;
     float rep_penalty_ = 1.1f;
-    bool  tools_enabled_ = false;
+    bool  tools_enabled_       = false;
+    bool  allow_shell_fallback_ = false;
     std::vector<std::string> tool_servers_;
     std::string node_endpoint_;  // empty = local inference; set via --node
 

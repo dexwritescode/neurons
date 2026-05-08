@@ -24,7 +24,8 @@ public:
         int   top_k        = 40;
         float top_p        = 0.9f;
         float rep_penalty  = 1.1f;
-        bool  tools_enabled = false;
+        bool  tools_enabled        = false;
+        bool  allow_shell_fallback = false;
         std::vector<std::string> tool_servers;
     };
 

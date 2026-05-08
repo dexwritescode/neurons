@@ -138,6 +138,11 @@ message GenerateRequest {
   // model->format_tool_result(name, result_json) and appends the tokens after
   // the base prompt. Ordering matches the tool calls that preceded this request.
   repeated ToolResult tool_results = 7;
+
+  // When true, tool calls for names not registered on any MCP server are routed
+  // through the built-in neurons-shell run_command. Always subject to the
+  // approval flow. Opt-in — false by default.
+  bool allow_shell_fallback = 8;
 }
 
 // ── Tool events (interleaved in the Generate stream) ─────────────────────────

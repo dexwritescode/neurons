@@ -128,6 +128,7 @@ int RemoteNodeRunner::run_repl() {
         if (opts_.max_tokens > 0) p->set_max_tokens(opts_.max_tokens);
 
         req.set_tool_use_enabled(opts_.tools_enabled);
+        req.set_allow_shell_fallback(opts_.allow_shell_fallback);
         for (const auto& s : opts_.tool_servers)
             req.add_active_mcp_servers(s);
 

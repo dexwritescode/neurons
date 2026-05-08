@@ -107,10 +107,14 @@ public:
 
     // ── Tool call callback ────────────────────────────────────────────────────
 
-    ToolCallCb make_tool_call_cb(const std::string&              session_id    = "",
-                                 const std::string&              chat_id       = "",
-                                 ApprovalCb                      approval_cb   = nullptr,
-                                 const std::vector<std::string>& server_filter = {});
+    // allow_shell_fallback: when true, tool calls for names not registered in any
+    // MCP server are routed through neurons-shell run_command (always subject to
+    // the approval callback). Opt-in — callers must explicitly enable this.
+    ToolCallCb make_tool_call_cb(const std::string&              session_id          = "",
+                                 const std::string&              chat_id             = "",
+                                 ApprovalCb                      approval_cb         = nullptr,
+                                 const std::vector<std::string>& server_filter       = {},
+                                 bool                            allow_shell_fallback = false);
 
     // ── Tool hooks ────────────────────────────────────────────────────────────
 

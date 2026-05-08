@@ -107,6 +107,9 @@ void ChatCommand::setup_command(CLI::App& app) {
     cmd->add_option("--top-p", top_p_, "Top-p sampling (default: 0.9)");
     cmd->add_option("--rep-penalty", rep_penalty_, "Repetition penalty (default: 1.1)");
     cmd->add_flag("--tools,-t", tools_enabled_, "Enable MCP tool use");
+    cmd->add_flag("--allow-commands", allow_shell_fallback_,
+                  "Allow the model to invoke arbitrary shell commands not registered "
+                  "as MCP tools (requires --tools; always prompts for approval)");
     cmd->add_option("--tool-servers", tool_servers_,
                     "Restrict tool use to specific MCP servers (default: all)");
 
@@ -138,8 +141,9 @@ int ChatCommand::execute() {
         opts.top_k         = top_k_;
         opts.top_p         = top_p_;
         opts.rep_penalty   = rep_penalty_;
-        opts.tools_enabled = tools_enabled_;
-        opts.tool_servers  = tool_servers_;
+        opts.tools_enabled       = tools_enabled_;
+        opts.allow_shell_fallback = allow_shell_fallback_;
+        opts.tool_servers        = tool_servers_;
         return RemoteNodeRunner(std::move(opts)).run_repl();
     }
 
@@ -273,7 +277,8 @@ int ChatCommand::run_repl(const std::string& model_path) {
             };
 
             tool_cb = mcp_mgr->make_tool_call_cb(
-                "cli-session", "cli-chat", approval_cb, tool_servers_);
+                "cli-session", "cli-chat", approval_cb, tool_servers_,
+                allow_shell_fallback_);
 
             // Inject tool definitions into the system prompt.
             if (mcp_mgr->has_active_tools(tool_servers_)) {

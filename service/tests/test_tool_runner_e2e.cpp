@@ -301,6 +301,81 @@ TEST_F(ToolRunnerE2ETest, AlwaysAsk_ApprovalDenied_ErrorInjectedAndToolNotRun) {
     EXPECT_THAT(output, ::testing::HasSubstr("Could not write"));
 }
 
+// allow_shell_fallback=true: unknown tool routes to neurons-shell run_command.
+// Approval is requested and the command executes when approved.
+TEST_F(ToolRunnerE2ETest, UnknownTool_FallsBackToShell_WhenApproved) {
+    const std::string args = nlohmann::json{{"message", "hello-world"}}.dump();
+    model_->add_turn("Running it. <<TOOL:echo_test:" + args + ">>");
+    model_->add_turn("Command ran.");
+
+    bool was_asked = false;
+    ApprovalCb approval_cb = [&](const ToolApprovalRequest& req) -> std::future<bool> {
+        was_asked = true;
+        EXPECT_EQ(req.server, "neurons-shell");
+        EXPECT_EQ(req.tool,   "echo_test");  // shows original tool name in UI
+        EXPECT_TRUE(req.destructive);
+        std::promise<bool> p;
+        p.set_value(true);
+        return p.get_future();
+    };
+
+    auto tool_cb = mgr_->make_tool_call_cb(
+        "session-1", "chat-1", approval_cb, {}, /*allow_shell_fallback=*/true);
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model_, {1}, 512, {},
+        [&](const std::string& d) { output += d; return true; },
+        tool_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(was_asked) << "Approval should be requested for shell-fallback tool";
+    EXPECT_THAT(output, ::testing::HasSubstr("Command ran"));
+}
+
+// allow_shell_fallback=false (default): unknown tool returns error, not shell execution.
+TEST_F(ToolRunnerE2ETest, UnknownTool_NoFallback_WhenFlagOff) {
+    const std::string args = nlohmann::json{{"message", "hello"}}.dump();
+    model_->add_turn("<<TOOL:unknown_tool:" + args + ">>");
+    model_->add_turn("Could not run.");
+
+    auto tool_cb = mgr_->make_tool_call_cb("session-1", "chat-1");  // fallback off by default
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model_, {1}, 512, {},
+        [&](const std::string& d) { output += d; return true; },
+        tool_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_THAT(output, ::testing::HasSubstr("Could not run"));
+}
+
+// allow_shell_fallback=true but no approval_cb: always_ask is auto-denied.
+TEST_F(ToolRunnerE2ETest, UnknownTool_FallsBackToShell_DeniedWithoutApprovalCb) {
+    const std::string args = nlohmann::json{{"message", "hello"}}.dump();
+    model_->add_turn("<<TOOL:unknown_tool:" + args + ">>");
+    model_->add_turn("Could not run.");
+
+    auto tool_cb = mgr_->make_tool_call_cb(
+        "session-1", "chat-1", /*approval_cb=*/nullptr, {}, /*allow_shell_fallback=*/true);
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model_, {1}, 512, {},
+        [&](const std::string& d) { output += d; return true; },
+        tool_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_THAT(output, ::testing::HasSubstr("Could not run"));
+}
+
 // Live inference: a real Qwen3 model generates a <tool_call>, McpManager
 // dispatches it to the built-in filesystem server, and the result is injected
 // before the model produces its final answer. Skipped if the model is absent.
