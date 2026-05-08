@@ -248,4 +248,32 @@ TEST_F(ToolRunnerTest, CancelledFlag_StopsGeneration) {
     EXPECT_LT(result.value(), 20u);
 }
 
+// After kMaxToolTurns tool invocations the loop terminates without invoking the
+// (kMaxToolTurns+1)-th tool, even though the model keeps emitting tool calls.
+TEST_F(ToolRunnerTest, MaxToolTurns_LoopStopsAfterLimit) {
+    auto model = make_model();
+    // One more tool-emitting turn than the limit allows.
+    const int attempts = compute::ToolRunner::kMaxToolTurns + 1;
+    for (int i = 0; i < attempts; ++i)
+        model->add_turn("Turn " + std::to_string(i) + " <<TOOL:ping:{}>>");
+    // Final text turn that will be streamed once the loop exits.
+    model->add_turn("All done.");
+
+    int tool_calls = 0;
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model, {1}, 256, {},
+        [&](const std::string& d) { output += d; return true; },
+        [&](const compute::LanguageModel::ToolCall&) -> std::optional<std::string> {
+            ++tool_calls;
+            return R"({"ok":true})";
+        },
+        cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(tool_calls, compute::ToolRunner::kMaxToolTurns);
+}
+
 } // namespace

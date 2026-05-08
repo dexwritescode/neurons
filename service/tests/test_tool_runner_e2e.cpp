@@ -5,6 +5,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@
 #include "compute/model/language_model.h"
 #include "compute/model/simple_bpe_tokenizer.h"
 #include "compute/model/model_config.h"
+#include "compute/core/compute_backend.h"
+#include "compute/core/compute_types.h"
 
 namespace fs = std::filesystem;
 using namespace neurons_service;
@@ -122,6 +125,8 @@ protected:
         fs::create_directories(tmp_dir_);
 
         mgr_ = std::make_unique<McpManager>(tmp_dir_.string());
+        // Populate tool_to_server_ for the built-in servers.
+        mgr_->connect_enabled();
 
         // Allow all reads without prompting.
         PermissionRule allow_all;
@@ -228,4 +233,141 @@ TEST_F(ToolRunnerE2ETest, NoToolCb_SingleTurnIgnoresToolMarker) {
     ASSERT_TRUE(result.has_value());
     // Streamed without calling any tool — marker text passes through.
     EXPECT_THAT(output, ::testing::HasSubstr("done"));
+}
+
+// write_file defaults to always_ask. When the approval callback returns true the
+// tool runs and the file is created.
+TEST_F(ToolRunnerE2ETest, AlwaysAsk_ApprovalApproved_ToolExecuted) {
+    const auto out_file = tmp_dir_ / "approved_output.txt";
+    const std::string args = nlohmann::json{
+        {"path", out_file.string()}, {"content", "approved"}}.dump();
+    model_->add_turn("Writing now. <<TOOL:write_file:" + args + ">>");
+    model_->add_turn("File written successfully.");
+
+    std::string approved_tool;
+    ApprovalCb approval_cb = [&](const ToolApprovalRequest& req) -> std::future<bool> {
+        approved_tool = req.tool;
+        std::promise<bool> p;
+        p.set_value(true);
+        return p.get_future();
+    };
+
+    auto tool_cb = mgr_->make_tool_call_cb("session-1", "chat-1", approval_cb);
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model_, {1}, 512, {},
+        [&](const std::string& d) { output += d; return true; },
+        tool_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(approved_tool, "write_file");
+    EXPECT_TRUE(std::filesystem::exists(out_file)) << "File should exist after approved write";
+    EXPECT_THAT(output, ::testing::HasSubstr("File written successfully"));
+}
+
+// When the approval callback returns false the tool does not run and the error
+// result is injected — generation continues from the next turn.
+TEST_F(ToolRunnerE2ETest, AlwaysAsk_ApprovalDenied_ErrorInjectedAndToolNotRun) {
+    const auto out_file = tmp_dir_ / "denied_output.txt";
+    const std::string args = nlohmann::json{
+        {"path", out_file.string()}, {"content", "should not appear"}}.dump();
+    model_->add_turn("Writing now. <<TOOL:write_file:" + args + ">>");
+    model_->add_turn("Could not write the file.");
+
+    bool was_asked = false;
+    ApprovalCb approval_cb = [&](const ToolApprovalRequest&) -> std::future<bool> {
+        was_asked = true;
+        std::promise<bool> p;
+        p.set_value(false);
+        return p.get_future();
+    };
+
+    auto tool_cb = mgr_->make_tool_call_cb("session-1", "chat-1", approval_cb);
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+
+    auto result = compute::ToolRunner{}.run(
+        *model_, {1}, 512, {},
+        [&](const std::string& d) { output += d; return true; },
+        tool_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(was_asked);
+    EXPECT_FALSE(std::filesystem::exists(out_file)) << "File must not be created when denied";
+    EXPECT_THAT(output, ::testing::HasSubstr("Could not write"));
+}
+
+// Live inference: a real Qwen3 model generates a <tool_call>, McpManager
+// dispatches it to the built-in filesystem server, and the result is injected
+// before the model produces its final answer. Skipped if the model is absent.
+TEST(ToolRunnerLiveTest, Qwen3_GeneratesToolCallAndContinues) {
+#if !defined(MLX_BACKEND_ENABLED)
+    GTEST_SKIP() << "MLX backend not compiled";
+#else
+    const auto model_path = std::filesystem::path(std::getenv("HOME"))
+        / ".neurons/models/mlx-community/Qwen3-8B-4bit";
+    if (!std::filesystem::exists(model_path))
+        GTEST_SKIP() << "Qwen3-8B-4bit not downloaded";
+
+    // Temp dir + secret file the model will read.
+    const auto tmp = std::filesystem::temp_directory_path() / "tool_runner_live_test";
+    std::filesystem::create_directories(tmp);
+    const auto secret = tmp / "secret.txt";
+    { std::ofstream f(secret); f << "neurons-live-42"; }
+
+    auto backend_res = compute::BackendFactory::create(compute::BackendType::MLX);
+    ASSERT_TRUE(backend_res.has_value());
+    auto backend = std::move(*backend_res);
+    ASSERT_TRUE(backend->initialize().has_value());
+
+    auto model_res = compute::LanguageModel::load(model_path, backend.get());
+    ASSERT_TRUE(model_res.has_value()) << model_res.error().message;
+    auto model = std::move(*model_res);
+
+    McpManager mgr(tmp.string());
+    mgr.connect_enabled();  // populate tool_to_server_ for built-ins
+
+    const std::string tools_json = mgr.tools_json();
+    const std::string sys_prompt = model->format_tool_system_prompt(tools_json);
+    const std::string user_msg   =
+        "Read the file at " + secret.string() + " and tell me what it contains.";
+
+    std::vector<std::pair<std::string, std::string>> msgs = {
+        {"system", sys_prompt}, {"user", user_msg}};
+    const std::string chat_text = model->tokenizer().apply_chat_template(
+        msgs, /*add_generation_prompt=*/true);
+    const auto token_ids = model->tokenizer().encode(
+        chat_text, /*add_special_tokens=*/false);
+
+    auto tool_cb = mgr.make_tool_call_cb(
+        "live-session", "live-chat", /*approval_cb=*/nullptr);
+
+    int tool_calls = 0;
+    compute::ToolCallCb counted_cb =
+        [&](const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
+            ++tool_calls;
+            return tool_cb(call);
+        };
+
+    std::string output;
+    std::atomic<bool> cancelled{false};
+    compute::SamplingParams params;
+    params.temperature = 0.0f;  // greedy — deterministic
+
+    auto result = compute::ToolRunner{}.run(
+        *model, token_ids, 512, params,
+        [&](const std::string& d) { output += d; return true; },
+        counted_cb, cancelled);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_GE(tool_calls, 1) << "Model should have called at least one tool.\nOutput: " << output;
+    EXPECT_THAT(output, ::testing::HasSubstr("neurons-live-42"));
+
+    backend->cleanup();
+    std::filesystem::remove_all(tmp);
+#endif
 }
