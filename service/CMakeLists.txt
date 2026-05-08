@@ -184,6 +184,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         tests/test_mcp_manager.cpp
         tests/test_mcp_rpc.cpp
         tests/test_builtin_mcp.cpp
+        tests/test_tool_runner_e2e.cpp
     )
 
     target_include_directories(service_tests PRIVATE

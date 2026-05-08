@@ -2,6 +2,7 @@
 
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
+#include "compute/model/tool_runner.h"
 #include "compute/model/chat_template.h"
 #include "models/registry/model_registry.h"
 
@@ -608,61 +609,16 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
         const std::string chat_id = req.session_id();
         tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb, server_filter);
     }
-    const bool can_use_tools = (tool_cb != nullptr) && mdl->supports_tool_use();
-    static constexpr int kMaxToolTurns = 5;
-    uint32_t total_gen = 0;
+    auto run_result = compute::ToolRunner{}.run(
+        *mdl, std::move(all_tokens), static_cast<size_t>(n_max), params,
+        cb, tool_cb, cancelled);
 
-    for (int turn = 0; turn <= kMaxToolTurns; ++turn) {
-        std::vector<int> gen_so_far;
-        std::string decoded_so_far;
-        std::string accumulated;
-        std::optional<compute::LanguageModel::ToolCall> pending_tool;
-
-        auto result = mdl->generate(all_tokens, static_cast<size_t>(n_max), params,
-            [&](int tok_id) -> bool {
-                if (cancelled.load(std::memory_order_relaxed)) return false;
-                if (mdl->config().is_eos_token(tok_id)) return false;
-
-                gen_so_far.push_back(tok_id);
-                const std::string new_decoded = tok.decode(gen_so_far);
-                const std::string delta = new_decoded.substr(decoded_so_far.size());
-                decoded_so_far = new_decoded;
-                accumulated += delta;
-
-                if (can_use_tools) {
-                    auto tc = mdl->detect_tool_call(accumulated);
-                    if (tc.has_value()) {
-                        pending_tool = std::move(tc);
-                        return false;
-                    }
-                }
-                return cb(delta);
-            });
-
-        total_gen += static_cast<uint32_t>(gen_so_far.size());
-
-        if (!result.has_value()) {
-            error_out = "Generation failed: " + result.error().message;
-            return false;
-        }
-
-        if (!pending_tool || turn == kMaxToolTurns) break;
-
-        // Invoke the tool callback — nullopt means denied.
-        auto tool_result = tool_cb(*pending_tool);
-        const std::string result_json = tool_result.value_or(
-            R"({"error":"Tool call denied"})");
-        const std::string injection = mdl->format_tool_result(
-            pending_tool->name, result_json);
-
-        // Extend the token list with what was generated + the injected result.
-        // No BOS on continuations.
-        all_tokens.insert(all_tokens.end(), gen_so_far.begin(), gen_so_far.end());
-        const std::vector<int> inj_tokens = tok.encode(injection, /*add_special_tokens=*/false);
-        all_tokens.insert(all_tokens.end(), inj_tokens.begin(), inj_tokens.end());
+    if (!run_result.has_value()) {
+        error_out = "Generation failed: " + run_result.error().message;
+        return false;
     }
 
-    if (gen_tokens_out) *gen_tokens_out = total_gen;
+    if (gen_tokens_out) *gen_tokens_out = run_result.value();
     return true;
 }
 

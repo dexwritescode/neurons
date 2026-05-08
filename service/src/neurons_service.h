@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
+#include "compute/model/tool_runner.h"
 #include "models/api/huggingface_client.h"
 #include "mcp/mcp_manager.h"
 
@@ -119,13 +120,9 @@ public:
 
     // ── Internal methods for FFI / non-gRPC callers ──────────────────────────
 
-    // Callback receives decoded token text. Return false to stop generation.
-    using GenerateTokenCb = std::function<bool(const std::string& token)>;
-
-    // Called when a tool call is detected during generation.
-    // Return the tool result JSON string, or nullopt to deny the call.
-    using ToolCallCb = std::function<
-        std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
+    // Canonical definitions in compute::TokenCb / compute::ToolCallCb (tool_runner.h).
+    using GenerateTokenCb = compute::TokenCb;
+    using ToolCallCb      = compute::ToolCallCb;
 
     // Run inference without going through gRPC. Builds the model-specific chat
     // prompt from req (same logic as the gRPC Generate RPC). Blocks until done

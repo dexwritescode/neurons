@@ -2,7 +2,7 @@
 
 #include "mcp_client.h"
 #include "mcp_types.h"
-#include "compute/model/language_model.h"
+#include "compute/model/tool_runner.h"
 
 #include <functional>
 #include <future>
@@ -28,8 +28,8 @@ struct ToolApprovalRequest {
 // Callback types for the Generate stream.
 using ApprovalCb = std::function<std::future<bool>(const ToolApprovalRequest&)>;
 
-using ToolCallCb = std::function<
-    std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
+// Canonical definition lives in compute::ToolCallCb (tool_runner.h).
+using ToolCallCb = compute::ToolCallCb;
 
 // Hook called around every tool dispatch (built-in or external MCP server).
 // Hooks are invoked in registration order.
