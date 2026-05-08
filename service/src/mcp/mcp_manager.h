@@ -115,8 +115,13 @@ public:
     // ── Tool hooks ────────────────────────────────────────────────────────────
 
     // Register a hook to run before/after every tool dispatch (built-in or external).
+    // Returns an opaque handle that can be passed to remove_tool_hook().
     // Hooks are called in registration order. Thread-safe.
-    void add_tool_hook(ToolHook hook);
+    uint64_t add_tool_hook(ToolHook hook);
+
+    // Remove the hook identified by the handle returned from add_tool_hook().
+    // No-op if the handle is not found. Thread-safe.
+    void remove_tool_hook(uint64_t handle);
 
 private:
     std::string servers_path()     const;
@@ -157,7 +162,8 @@ private:
     std::vector<PermissionRule> builtin_rules_;
 
     // Tool hooks (pre/post dispatch).
-    std::vector<ToolHook> hooks_;
+    std::vector<std::pair<uint64_t, ToolHook>> hooks_;
+    uint64_t next_hook_id_ = 0;
 
     mutable std::mutex mutex_;
 };

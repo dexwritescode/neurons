@@ -451,9 +451,17 @@ std::string McpManager::resolve_permission(const std::string& server,
 
 // ── Tool hooks ────────────────────────────────────────────────────────────────
 
-void McpManager::add_tool_hook(ToolHook hook) {
+uint64_t McpManager::add_tool_hook(ToolHook hook) {
     std::lock_guard lock(mutex_);
-    hooks_.push_back(std::move(hook));
+    const uint64_t id = ++next_hook_id_;
+    hooks_.emplace_back(id, std::move(hook));
+    return id;
+}
+
+void McpManager::remove_tool_hook(uint64_t handle) {
+    std::lock_guard lock(mutex_);
+    hooks_.erase(std::remove_if(hooks_.begin(), hooks_.end(),
+        [handle](const auto& p) { return p.first == handle; }), hooks_.end());
 }
 
 // ── Unified tool dispatch (hooks → handler → hooks) ───────────────────────────
@@ -464,7 +472,7 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
     // Pre-call hooks (may rewrite args or deny the call).
     {
         std::lock_guard lock(mutex_);
-        for (auto& hook : hooks_) {
+        for (auto& [id, hook] : hooks_) {
             if (hook.pre_call && !hook.pre_call(server_name, tool_name, args_json))
                 return R"({"error":"Call denied by pre-call hook"})";
         }
@@ -499,7 +507,7 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
     // Post-call hooks (may transform or trim result).
     {
         std::lock_guard lock(mutex_);
-        for (auto& hook : hooks_) {
+        for (auto& [id, hook] : hooks_) {
             if (hook.post_call) hook.post_call(server_name, tool_name, args_json, result);
         }
     }

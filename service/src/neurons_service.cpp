@@ -342,6 +342,35 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         return future;
     };
 
+    // Register a per-request hook that streams ToolCallEvent / ToolResultEvent.
+    ToolHook streaming_hook;
+    streaming_hook.pre_call = [ctx, writer](const std::string& server,
+                                             const std::string& tool,
+                                             std::string& args_json) -> bool {
+        if (ctx->IsCancelled()) return true;
+        neurons::GenerateResponse resp;
+        auto* tc = resp.mutable_tool_call();
+        tc->set_server(server);
+        tc->set_tool(tool);
+        tc->set_args_json(args_json);
+        writer->Write(resp);
+        return true;
+    };
+    streaming_hook.post_call = [ctx, writer](const std::string& server,
+                                              const std::string& tool,
+                                              const std::string&,
+                                              std::string& result) {
+        if (ctx->IsCancelled()) return;
+        neurons::GenerateResponse resp;
+        auto* tr = resp.mutable_tool_result();
+        tr->set_server(server);
+        tr->set_tool(tool);
+        tr->set_result_json(result);
+        tr->set_error(result.find("\"error\"") != std::string::npos);
+        writer->Write(resp);
+    };
+    const uint64_t hook_id = mcp_manager_.add_tool_hook(streaming_hook);
+
     generate_internal(*req, not_cancelled,
         [&](const std::string& delta) -> bool {
             if (ctx->IsCancelled()) return false;
@@ -356,6 +385,8 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         &gen_token_count,
         nullptr,        // tool_cb — built inside generate_internal
         approval_cb);
+
+    mcp_manager_.remove_tool_hook(hook_id);
 
     // Clean up any approvals still pending (client disconnected mid-flow)
     {
