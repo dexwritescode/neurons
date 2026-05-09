@@ -289,22 +289,15 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
                     }
                     if (pos > print_pos)
                         std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
-                    std::cout << "\033[2m" << std::flush;
                     print_pos = pos + OPEN.size();
                     in_think = true;
                 } else {
                     size_t pos = decoded_so_far.find(CLOSE, print_pos);
                     if (pos == std::string::npos) {
                         size_t safe = decoded_so_far.size() > HOLD ? decoded_so_far.size() - HOLD : print_pos;
-                        if (safe > print_pos) {
-                            std::cout << decoded_so_far.substr(print_pos, safe - print_pos) << std::flush;
-                            print_pos = safe;
-                        }
+                        print_pos = safe;
                         break;
                     }
-                    if (pos > print_pos)
-                        std::cout << decoded_so_far.substr(print_pos, pos - print_pos) << std::flush;
-                    std::cout << "\033[0m\n" << std::flush;
                     print_pos = pos + CLOSE.size();
                     in_think = false;
                 }
@@ -365,10 +358,8 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
             total_tokens = static_cast<uint32_t>(token_count);
         }
 
-        if (print_pos < decoded_so_far.size())
+        if (!in_think && print_pos < decoded_so_far.size())
             std::cout << decoded_so_far.substr(print_pos) << std::flush;
-        if (in_think)
-            std::cout << "\033[0m" << std::flush;
 
         std::cout << "\n";
 
