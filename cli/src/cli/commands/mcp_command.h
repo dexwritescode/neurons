@@ -26,7 +26,6 @@ private:
     int do_list();
     int do_test();
 
-    NeuronsConfig* config_;
     std::string subcommand_;
 
     // add options

@@ -827,7 +827,7 @@ class _InputBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final showToolsButton = supportsToolUse && mcpServers.isNotEmpty;
+    final showToolsButton = supportsToolUse;
     final activeCount = activeServerNames.intersection(
         mcpServers.map((s) => s.name).toSet()).length;
 

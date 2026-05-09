@@ -407,7 +407,8 @@ class FfiNeuronsClient implements NeuronsClient {
       ..backend = m['backend'] as String? ?? ''
       ..vocabSize = (m['vocabSize'] as num? ?? 0).toInt()
       ..numLayers = (m['numLayers'] as num? ?? 0).toInt()
-      ..maxPositionEmbeddings = (_protoInt(m['maxPositionEmbeddings']));
+      ..maxPositionEmbeddings = (_protoInt(m['maxPositionEmbeddings']))
+      ..supportsToolUse = m['supportsToolUse'] as bool? ?? false;
     final gpusList = m['gpus'] as List<dynamic>? ?? [];
     for (final g in gpusList) {
       final gm = g as Map<String, dynamic>;
@@ -446,7 +447,8 @@ class FfiNeuronsClient implements NeuronsClient {
         ..modelType = status.modelType
         ..vocabSize = status.vocabSize
         ..numLayers = status.numLayers
-        ..maxPositionEmbeddings = status.maxPositionEmbeddings;
+        ..maxPositionEmbeddings = status.maxPositionEmbeddings
+        ..supportsToolUse = status.supportsToolUse;
     } finally {
       calloc.free(errBuf);
     }

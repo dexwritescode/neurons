@@ -13,7 +13,7 @@ namespace fs = std::filesystem;
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
-McpCommand::McpCommand(NeuronsConfig* config) : config_(config) {
+McpCommand::McpCommand(NeuronsConfig* /*config*/) {
     command_name_ = "mcp";
     description_  = "Manage Model Context Protocol (MCP) servers";
 }
