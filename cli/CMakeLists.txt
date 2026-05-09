@@ -61,20 +61,6 @@ if(NOT tabulate_FOUND)
     FetchContent_MakeAvailable(tabulate)
 endif()
 
-# Find FTXUI for interactive terminal UI (approval menus, etc.)
-find_package(ftxui CONFIG QUIET)
-if(NOT ftxui_FOUND)
-    include(FetchContent)
-    FetchContent_Declare(
-        ftxui
-        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-        GIT_TAG        v6.1.9
-    )
-    set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
-    set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(ftxui)
-endif()
-
 # Find nlohmann/json for config file support
 find_package(nlohmann_json QUIET)
 if(NOT nlohmann_json_FOUND)
@@ -128,8 +114,8 @@ add_executable(cli
     src/cli/utils/table_formatter.cpp
     src/cli/utils/format_utils.h
     src/cli/utils/format_utils.cpp
-    src/cli/utils/tool_approval_ui.h
-    src/cli/utils/tool_approval_ui.cpp
+    src/cli/utils/tool_policy.h
+    src/cli/utils/tool_policy.cpp
 )
 
 target_include_directories(cli
@@ -163,7 +149,6 @@ endif()
 
 target_link_libraries(cli PRIVATE model_manager)
 target_link_libraries(cli PRIVATE compute_backend)
-target_link_libraries(cli PRIVATE ftxui::component ftxui::dom ftxui::screen)
 
 # Remote node support: link neurons_proto (which pulls in gRPC and protobuf)
 # when the service subdirectory was included (gRPC found at the top level).

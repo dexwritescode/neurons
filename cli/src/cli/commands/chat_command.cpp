@@ -15,8 +15,7 @@
 #include "compute/core/compute_types.h"
 #include "mcp/mcp_manager.h"
 #include "mcp/mcp_types.h"
-
-#include "cli/utils/tool_approval_ui.h"
+#include "cli/utils/tool_policy.h"
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include "compute/backends/mlx/mlx_backend.h"
@@ -54,11 +53,22 @@ void ChatCommand::setup_command(CLI::App& app) {
                   "as MCP tools (requires --tools; always prompts for approval)");
     cmd->add_option("--tool-servers", tool_servers_,
                     "Restrict tool use to specific MCP servers (default: all)");
+    cmd->add_option("--tool-policy", tool_policy_,
+                    "Tool approval policy: allow (auto-approve), deny (auto-deny), "
+                    "ask (y/N prompt; default)");
 
     cmd->callback([this]() { std::exit(execute()); });
 }
 
 int ChatCommand::execute() {
+    ToolPolicy policy = ToolPolicy::Ask;
+    try {
+        policy = parse_tool_policy(tool_policy_);
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+
     if (!node_endpoint_.empty()) {
         // Resolve node name → host:port, or strip grpc:// scheme from a URL.
         std::string endpoint = node_endpoint_;
@@ -83,9 +93,10 @@ int ChatCommand::execute() {
         opts.top_k         = top_k_;
         opts.top_p         = top_p_;
         opts.rep_penalty   = rep_penalty_;
-        opts.tools_enabled       = tools_enabled_;
+        opts.tools_enabled        = tools_enabled_;
         opts.allow_shell_fallback = allow_shell_fallback_;
-        opts.tool_servers        = tool_servers_;
+        opts.tool_policy          = policy;
+        opts.tool_servers         = tool_servers_;
         return RemoteNodeRunner(std::move(opts)).run_repl();
     }
 
@@ -103,7 +114,7 @@ int ChatCommand::execute() {
         std::cerr << "Run 'neurons list' to see available models\n";
         return 1;
     }
-    return run_repl(location.modelPath);
+    return run_repl(location.modelPath, policy);
 }
 
 std::string ChatCommand::buildPrompt(const std::string& model_type,
@@ -126,7 +137,7 @@ void ChatCommand::printHelp() const {
     std::cout << "  /help    — show this help\n";
 }
 
-int ChatCommand::run_repl(const std::string& model_path) {
+int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
     std::cout << "Loading model..." << std::flush;
     auto t0 = std::chrono::steady_clock::now();
@@ -189,32 +200,14 @@ int ChatCommand::run_repl(const std::string& model_path) {
             };
             mcp_mgr->add_tool_hook(log_hook);
 
-            // Approval callback: shown for tools with always_ask permission.
+            // Approval callback: behaviour driven by --tool-policy flag.
             neurons_service::ApprovalCb approval_cb =
-                [&mcp_mgr](const neurons_service::ToolApprovalRequest& req)
+                [policy](const neurons_service::ToolApprovalRequest& req)
                     -> std::future<bool>
             {
                 std::promise<bool> p;
-                int choice = neurons::cli::show_tool_approval_ui(req.tool, req.server, req.args_json);
-                bool allowed = (choice <= 1);
-                if (choice == 1) {
-                    neurons_service::PermissionRule rule;
-                    rule.server     = req.server;
-                    rule.tool       = req.tool;
-                    rule.permission = "always_allow";
-                    rule.scope      = "global";
-                    mcp_mgr->set_rule(rule);
-                    mcp_mgr->save_permissions();
-                } else if (choice == 3) {
-                    neurons_service::PermissionRule rule;
-                    rule.server     = req.server;
-                    rule.tool       = req.tool;
-                    rule.permission = "always_deny";
-                    rule.scope      = "global";
-                    mcp_mgr->set_rule(rule);
-                    mcp_mgr->save_permissions();
-                }
-                p.set_value(allowed);
+                p.set_value(resolve_tool_approval(
+                    req.tool, req.server, req.args_json, policy));
                 return p.get_future();
             };
 

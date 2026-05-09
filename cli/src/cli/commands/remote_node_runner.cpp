@@ -13,7 +13,6 @@
 
 #include "neurons.grpc.pb.h"
 #include "neurons.pb.h"
-#include "cli/utils/tool_approval_ui.h"
 
 namespace neurons::cli {
 
@@ -122,21 +121,16 @@ int RemoteNodeRunner::run_repl() {
                 }
                 case neurons::GenerateResponse::kApprovalRequest: {
                     const auto& ar = resp.approval_request();
-                    int choice = neurons::cli::show_tool_approval_ui(
-                        ar.tool(), ar.server(), ar.args_json());
+                    bool allowed = resolve_tool_approval(
+                        ar.tool(), ar.server(), ar.args_json(), opts_.tool_policy);
 
                     neurons::ToolApprovalResponse approval;
                     approval.set_approval_id(ar.approval_id());
-                    approval.set_approved(choice <= 1);
-                    if      (choice == 1) approval.set_new_permission("always_allow");
-                    else if (choice == 3) approval.set_new_permission("always_deny");
+                    approval.set_approved(allowed);
 
                     grpc::ClientContext approval_ctx;
                     neurons::ToolApprovalResult result;
                     stub_->RespondToolApproval(&approval_ctx, approval, &result);
-
-                    // Resume printing after approval UI
-                    std::cout << "Assistant: " << std::flush;
                     break;
                 }
                 default:

@@ -5,6 +5,7 @@
 #include <vector>
 #include "base_command.h"
 #include "remote_node_runner.h"
+#include "cli/utils/tool_policy.h"
 #include "models/registry/model_registry.h"
 #include "cli/config/neurons_config.h"
 
@@ -31,15 +32,16 @@ private:
     int   top_k_       = 40;
     float top_p_       = 0.9f;
     float rep_penalty_ = 1.1f;
-    bool  tools_enabled_       = false;
+    bool  tools_enabled_        = false;
     bool  allow_shell_fallback_ = false;
+    std::string tool_policy_    = "ask"; // "allow", "deny", or "ask"
     std::vector<std::string> tool_servers_;
     std::string node_endpoint_;  // empty = local inference; set via --node
 
     NeuronsConfig* config_;
     std::unique_ptr<models::registry::ModelRegistry> model_registry_;
 
-    int run_repl(const std::string& model_path);
+    int run_repl(const std::string& model_path, ToolPolicy policy);
     std::string buildPrompt(const std::string& model_type,
                             const std::vector<Turn>& history,
                             const std::string& user_input,

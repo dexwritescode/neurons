@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include "cli/utils/tool_policy.h"
 
 #if defined(NEURONS_REMOTE_ENABLED)
 #include <memory>
@@ -26,6 +27,7 @@ public:
         float rep_penalty  = 1.1f;
         bool  tools_enabled        = false;
         bool  allow_shell_fallback = false;
+        ToolPolicy tool_policy     = ToolPolicy::Ask;
         std::vector<std::string> tool_servers;
     };
 
