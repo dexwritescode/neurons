@@ -165,6 +165,6 @@ endif()
 
 # Set executable name
 set_target_properties(cli PROPERTIES
-    OUTPUT_NAME "nctl"
+    OUTPUT_NAME "neuron"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
