@@ -4,7 +4,7 @@
 namespace neurons::cli {
 
 CliApp::CliApp()
-    : app_{"Neurons CLI", "Command line interface for Neurons"} {
+    : app_{"nctl", "Neurons control — model testing and service management"} {
     app_.require_subcommand(1);
 }
 
