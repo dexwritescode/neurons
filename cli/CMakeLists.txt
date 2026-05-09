@@ -117,7 +117,6 @@ add_executable(cli
     # MCP client/manager + built-in servers (shared sources from service/)
     ../service/src/mcp/mcp_client.cpp
     ../service/src/mcp/mcp_manager.cpp
-    ../service/src/mcp/builtin_filesystem.cpp
     ../service/src/mcp/builtin_shell.cpp
     src/cli/core/cli_app.h
     src/cli/core/cli_app.cpp
@@ -129,6 +128,8 @@ add_executable(cli
     src/cli/utils/table_formatter.cpp
     src/cli/utils/format_utils.h
     src/cli/utils/format_utils.cpp
+    src/cli/utils/tool_approval_ui.h
+    src/cli/utils/tool_approval_ui.cpp
 )
 
 target_include_directories(cli

@@ -41,6 +41,10 @@ Result<uint32_t> ToolRunner::run(
                         pending_tool = std::move(tc);
                         return false;
                     }
+                    // Suppress tokens once the tool-call open tag is in the
+                    // stream — the block is internal protocol, not user output.
+                    if (accumulated.find("<tool_call>") != std::string::npos)
+                        return true;
                 }
                 return token_cb(delta);
             });

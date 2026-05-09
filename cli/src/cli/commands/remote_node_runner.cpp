@@ -10,59 +10,10 @@
 
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
-#include <ftxui/component/component.hpp>
-#include <ftxui/component/screen_interactive.hpp>
-#include <ftxui/dom/elements.hpp>
 
 #include "neurons.grpc.pb.h"
 #include "neurons.pb.h"
-
-namespace {
-
-// Returns: 0 = Allow once, 1 = Always allow, 2 = Deny once, 3 = Always deny.
-int show_approval_ui(const neurons::ToolApprovalRequest& req) {
-    using namespace ftxui;
-
-    std::string cmd = req.tool();
-    try {
-        auto args = nlohmann::json::parse(req.args_json());
-        for (auto& [k, v] : args.items())
-            if (v.is_string()) cmd += " " + v.get<std::string>();
-    } catch (...) {
-        cmd += " " + req.args_json();
-    }
-
-    std::vector<std::string> entries = {
-        "Allow once", "Always allow", "Deny once", "Always deny" };
-    int selected = 0;
-    auto menu   = Menu(&entries, &selected);
-    auto screen = ScreenInteractive::TerminalOutput();
-
-    auto ui = Renderer(menu, [&] {
-        return vbox({
-            window(
-                text(" Tool Approval ") | bold,
-                vbox({
-                    hbox({ text(" Tool:   ") | dim, text(req.tool())   | bold }),
-                    hbox({ text(" Server: ") | dim, text(req.server()) | dim  }),
-                    separator(),
-                    hbox({ text(" $ ") | dim, paragraph(cmd) | color(Color::Yellow) }),
-                })
-            ),
-            menu->Render() | border,
-            text(" ↑/↓  navigate   Enter  confirm ") | dim | center,
-        });
-    });
-
-    auto component = CatchEvent(ui, [&](Event event) {
-        if (event == Event::Return) { screen.ExitLoopClosure()(); return true; }
-        return false;
-    });
-    screen.Loop(component);
-    return selected;
-}
-
-} // anonymous namespace
+#include "cli/utils/tool_approval_ui.h"
 
 namespace neurons::cli {
 
@@ -171,7 +122,8 @@ int RemoteNodeRunner::run_repl() {
                 }
                 case neurons::GenerateResponse::kApprovalRequest: {
                     const auto& ar = resp.approval_request();
-                    int choice = show_approval_ui(ar);
+                    int choice = neurons::cli::show_tool_approval_ui(
+                        ar.tool(), ar.server(), ar.args_json());
 
                     neurons::ToolApprovalResponse approval;
                     approval.set_approval_id(ar.approval_id());

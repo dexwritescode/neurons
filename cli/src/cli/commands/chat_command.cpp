@@ -16,69 +16,11 @@
 #include "mcp/mcp_manager.h"
 #include "mcp/mcp_types.h"
 
-#include <ftxui/component/component.hpp>
-#include <ftxui/component/screen_interactive.hpp>
-#include <ftxui/dom/elements.hpp>
+#include "cli/utils/tool_approval_ui.h"
 
 #if defined(__APPLE__) && defined(__aarch64__) && defined(MLX_BACKEND_ENABLED)
 #include "compute/backends/mlx/mlx_backend.h"
 #endif
-
-namespace {
-
-// Returns: 0 = Allow once, 1 = Always allow, 2 = Deny once, 3 = Always deny.
-int show_tool_approval_ui(const neurons_service::ToolApprovalRequest& req) {
-    using namespace ftxui;
-
-    std::string cmd = req.tool;
-    try {
-        auto args = nlohmann::json::parse(req.args_json);
-        for (auto& [k, v] : args.items())
-            if (v.is_string()) cmd += " " + v.get<std::string>();
-    } catch (...) {
-        cmd += " " + req.args_json;
-    }
-
-    std::vector<std::string> entries = {
-        "Allow once",
-        "Always allow",
-        "Deny once",
-        "Always deny",
-    };
-    int selected = 0;
-
-    auto menu = Menu(&entries, &selected);
-    auto screen = ScreenInteractive::TerminalOutput();
-
-    auto ui = Renderer(menu, [&] {
-        return vbox({
-            window(
-                text(" Tool Approval ") | bold,
-                vbox({
-                    hbox({ text(" Tool:   ") | dim, text(req.tool)   | bold }),
-                    hbox({ text(" Server: ") | dim, text(req.server) | dim  }),
-                    separator(),
-                    hbox({ text(" $ ") | dim, paragraph(cmd) | color(Color::Yellow) }),
-                })
-            ),
-            menu->Render() | border,
-            text(" ↑/↓  navigate   Enter  confirm ") | dim | center,
-        });
-    });
-
-    auto component = CatchEvent(ui, [&](Event event) {
-        if (event == Event::Return) {
-            screen.ExitLoopClosure()();
-            return true;
-        }
-        return false;
-    });
-
-    screen.Loop(component);
-    return selected;
-}
-
-} // anonymous namespace
 
 namespace neurons::cli {
 
@@ -253,7 +195,7 @@ int ChatCommand::run_repl(const std::string& model_path) {
                     -> std::future<bool>
             {
                 std::promise<bool> p;
-                int choice = show_tool_approval_ui(req);
+                int choice = neurons::cli::show_tool_approval_ui(req.tool, req.server, req.args_json);
                 bool allowed = (choice <= 1);
                 if (choice == 1) {
                     neurons_service::PermissionRule rule;

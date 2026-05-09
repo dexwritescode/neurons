@@ -103,7 +103,6 @@ add_library(neurons_service_lib STATIC
     src/http_server.cpp
     src/mcp/mcp_client.cpp
     src/mcp/mcp_manager.cpp
-    src/mcp/builtin_filesystem.cpp
     src/mcp/builtin_shell.cpp
 )
 
