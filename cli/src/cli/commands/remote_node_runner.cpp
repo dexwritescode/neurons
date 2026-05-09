@@ -107,18 +107,9 @@ int RemoteNodeRunner::run_repl() {
                     std::cout << delta << std::flush;
                     break;
                 }
-                case neurons::GenerateResponse::kToolCall: {
-                    const auto& tc = resp.tool_call();
-                    std::cout << "\n\033[2m[→ " << tc.server() << "/" << tc.tool()
-                              << "]\033[0m\n" << std::flush;
+                case neurons::GenerateResponse::kToolCall:
+                case neurons::GenerateResponse::kToolResult:
                     break;
-                }
-                case neurons::GenerateResponse::kToolResult: {
-                    const auto& tr = resp.tool_result();
-                    std::cout << "\033[2m[← " << tr.server() << "/" << tr.tool()
-                              << " done]\033[0m\n" << std::flush;
-                    break;
-                }
                 case neurons::GenerateResponse::kApprovalRequest: {
                     const auto& ar = resp.approval_request();
                     bool allowed = resolve_tool_approval(

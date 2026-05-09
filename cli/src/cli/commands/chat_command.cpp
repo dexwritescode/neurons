@@ -184,21 +184,6 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
             mcp_mgr->load_permissions();
             mcp_mgr->connect_enabled();
 
-            // Log tool dispatch events to the terminal.
-            neurons_service::ToolHook log_hook;
-            log_hook.pre_call = [](const std::string& server,
-                                   const std::string& tool,
-                                   std::string&) -> bool {
-                std::cout << "\n\033[2m[→ " << server << "/" << tool << "]\033[0m\n" << std::flush;
-                return true;
-            };
-            log_hook.post_call = [](const std::string& server,
-                                    const std::string& tool,
-                                    const std::string&,
-                                    std::string&) {
-                std::cout << "\033[2m[← " << server << "/" << tool << " done]\033[0m\n" << std::flush;
-            };
-            mcp_mgr->add_tool_hook(log_hook);
 
             // Approval callback: behaviour driven by --tool-policy flag.
             neurons_service::ApprovalCb approval_cb =
