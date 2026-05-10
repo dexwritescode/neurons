@@ -4,7 +4,7 @@
 namespace neurons::cli {
 
 CliApp::CliApp()
-    : app_{"Neurons CLI", "Command line interface for Neurons"} {
+    : app_{"neuron", "Neurons — local AI inference and service management"} {
     app_.require_subcommand(1);
 }
 

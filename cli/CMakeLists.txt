@@ -92,6 +92,8 @@ add_executable(cli
     src/cli/commands/node_command.cpp
     src/cli/commands/chat_command.h
     src/cli/commands/chat_command.cpp
+    src/cli/commands/remote_node_runner.h
+    src/cli/commands/remote_node_runner.cpp
     src/cli/commands/server_command.h
     src/cli/commands/server_command.cpp
     src/cli/commands/mcp_command.h
@@ -101,7 +103,6 @@ add_executable(cli
     # MCP client/manager + built-in servers (shared sources from service/)
     ../service/src/mcp/mcp_client.cpp
     ../service/src/mcp/mcp_manager.cpp
-    ../service/src/mcp/builtin_filesystem.cpp
     ../service/src/mcp/builtin_shell.cpp
     src/cli/core/cli_app.h
     src/cli/core/cli_app.cpp
@@ -113,6 +114,8 @@ add_executable(cli
     src/cli/utils/table_formatter.cpp
     src/cli/utils/format_utils.h
     src/cli/utils/format_utils.cpp
+    src/cli/utils/tool_policy.h
+    src/cli/utils/tool_policy.cpp
 )
 
 target_include_directories(cli
@@ -147,6 +150,13 @@ endif()
 target_link_libraries(cli PRIVATE model_manager)
 target_link_libraries(cli PRIVATE compute_backend)
 
+# Remote node support: link neurons_proto (which pulls in gRPC and protobuf)
+# when the service subdirectory was included (gRPC found at the top level).
+if(TARGET neurons_proto)
+    target_link_libraries(cli PRIVATE neurons_proto)
+    target_compile_definitions(cli PRIVATE NEURONS_REMOTE_ENABLED)
+endif()
+
 if(nlohmann_json_FOUND)
     target_link_libraries(cli PRIVATE nlohmann_json::nlohmann_json)
 else()
@@ -155,6 +165,6 @@ endif()
 
 # Set executable name
 set_target_properties(cli PROPERTIES
-    OUTPUT_NAME "neurons"
+    OUTPUT_NAME "neuron"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

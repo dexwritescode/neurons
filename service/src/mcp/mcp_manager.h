@@ -2,7 +2,7 @@
 
 #include "mcp_client.h"
 #include "mcp_types.h"
-#include "compute/model/language_model.h"
+#include "compute/model/tool_runner.h"
 
 #include <functional>
 #include <future>
@@ -28,8 +28,8 @@ struct ToolApprovalRequest {
 // Callback types for the Generate stream.
 using ApprovalCb = std::function<std::future<bool>(const ToolApprovalRequest&)>;
 
-using ToolCallCb = std::function<
-    std::optional<std::string>(const compute::LanguageModel::ToolCall&)>;
+// Canonical definition lives in compute::ToolCallCb (tool_runner.h).
+using ToolCallCb = compute::ToolCallCb;
 
 // Hook called around every tool dispatch (built-in or external MCP server).
 // Hooks are invoked in registration order.
@@ -84,9 +84,9 @@ public:
 
     // ── Tool queries ──────────────────────────────────────────────────────────
 
-    std::vector<ToolDef> list_tools();
-    std::string          tools_json();
-    bool                 has_active_tools() const;
+    std::vector<ToolDef> list_tools(const std::vector<std::string>& server_filter = {});
+    std::string          tools_json(const std::vector<std::string>& server_filter = {});
+    bool                 has_active_tools(const std::vector<std::string>& server_filter = {}) const;
 
     // ── Permission rules ──────────────────────────────────────────────────────
 
@@ -107,15 +107,25 @@ public:
 
     // ── Tool call callback ────────────────────────────────────────────────────
 
-    ToolCallCb make_tool_call_cb(const std::string& session_id = "",
-                                 const std::string& chat_id    = "",
-                                 ApprovalCb         approval_cb = nullptr);
+    // allow_shell_fallback: when true, tool calls for names not registered in any
+    // MCP server are routed through neurons-shell run_command (always subject to
+    // the approval callback). Opt-in — callers must explicitly enable this.
+    ToolCallCb make_tool_call_cb(const std::string&              session_id          = "",
+                                 const std::string&              chat_id             = "",
+                                 ApprovalCb                      approval_cb         = nullptr,
+                                 const std::vector<std::string>& server_filter       = {},
+                                 bool                            allow_shell_fallback = false);
 
     // ── Tool hooks ────────────────────────────────────────────────────────────
 
     // Register a hook to run before/after every tool dispatch (built-in or external).
+    // Returns an opaque handle that can be passed to remove_tool_hook().
     // Hooks are called in registration order. Thread-safe.
-    void add_tool_hook(ToolHook hook);
+    uint64_t add_tool_hook(ToolHook hook);
+
+    // Remove the hook identified by the handle returned from add_tool_hook().
+    // No-op if the handle is not found. Thread-safe.
+    void remove_tool_hook(uint64_t handle);
 
 private:
     std::string servers_path()     const;
@@ -156,7 +166,8 @@ private:
     std::vector<PermissionRule> builtin_rules_;
 
     // Tool hooks (pre/post dispatch).
-    std::vector<ToolHook> hooks_;
+    std::vector<std::pair<uint64_t, ToolHook>> hooks_;
+    uint64_t next_hook_id_ = 0;
 
     mutable std::mutex mutex_;
 };

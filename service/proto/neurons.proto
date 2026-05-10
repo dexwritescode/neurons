@@ -99,6 +99,14 @@ message SamplingParams {
   int32 context_window = 6;  // Max tokens of context to include (0 = model max)
 }
 
+// A tool result to inject into the prompt before generation begins.
+// Used by remote-node clients that execute tools client-side and send the
+// structured result back for the service to format using the model's syntax.
+message ToolResult {
+  string name        = 1;  // Tool name (must match the prior tool call)
+  string result_json = 2;  // JSON string returned by the tool executor
+}
+
 message GenerateRequest {
   // Conversation history (all prior turns). The service applies the
   // model's chat template to format the full prompt.
@@ -110,13 +118,31 @@ message GenerateRequest {
   // Sampling configuration. If omitted, service defaults apply.
   SamplingParams params = 3;
 
-  // MCP server names to activate for this generation (must be configured on
-  // the node). Empty = no tool use even if model supports it.
+  // MCP server names to restrict tool use to for this generation. Non-empty =
+  // only tools from these servers are visible to the model. Empty = all
+  // registered servers are available (subject to tool_use_enabled).
   repeated string active_mcp_servers = 4;
 
   // Chat session ID — used to scope session-level permission overrides and
   // per-chat permission rules.
   string session_id = 5;
+
+  // Explicit tool-use toggle. When false, tool use is disabled for this
+  // request regardless of registered MCP servers or model capability.
+  // When not set, tool use is enabled automatically if the model supports it
+  // and MCP servers are available.
+  optional bool tool_use_enabled = 6;
+
+  // Tool results to inject before generation begins (remote-node / client-side
+  // tool execution). The service formats each entry using
+  // model->format_tool_result(name, result_json) and appends the tokens after
+  // the base prompt. Ordering matches the tool calls that preceded this request.
+  repeated ToolResult tool_results = 7;
+
+  // When true, tool calls for names not registered on any MCP server are routed
+  // through the built-in neurons-shell run_command. Always subject to the
+  // approval flow. Opt-in — false by default.
+  bool allow_shell_fallback = 8;
 }
 
 // ── Tool events (interleaved in the Generate stream) ─────────────────────────

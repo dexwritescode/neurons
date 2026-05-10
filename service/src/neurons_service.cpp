@@ -2,6 +2,7 @@
 
 #include "compute/core/compute_backend.h"
 #include "compute/model/language_model.h"
+#include "compute/model/tool_runner.h"
 #include "compute/model/chat_template.h"
 #include "models/registry/model_registry.h"
 
@@ -341,6 +342,35 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         return future;
     };
 
+    // Register a per-request hook that streams ToolCallEvent / ToolResultEvent.
+    ToolHook streaming_hook;
+    streaming_hook.pre_call = [ctx, writer](const std::string& server,
+                                             const std::string& tool,
+                                             std::string& args_json) -> bool {
+        if (ctx->IsCancelled()) return true;
+        neurons::GenerateResponse resp;
+        auto* tc = resp.mutable_tool_call();
+        tc->set_server(server);
+        tc->set_tool(tool);
+        tc->set_args_json(args_json);
+        writer->Write(resp);
+        return true;
+    };
+    streaming_hook.post_call = [ctx, writer](const std::string& server,
+                                              const std::string& tool,
+                                              const std::string&,
+                                              std::string& result) {
+        if (ctx->IsCancelled()) return;
+        neurons::GenerateResponse resp;
+        auto* tr = resp.mutable_tool_result();
+        tr->set_server(server);
+        tr->set_tool(tool);
+        tr->set_result_json(result);
+        tr->set_error(result.find("\"error\"") != std::string::npos);
+        writer->Write(resp);
+    };
+    const uint64_t hook_id = mcp_manager_.add_tool_hook(streaming_hook);
+
     generate_internal(*req, not_cancelled,
         [&](const std::string& delta) -> bool {
             if (ctx->IsCancelled()) return false;
@@ -355,6 +385,8 @@ grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
         &gen_token_count,
         nullptr,        // tool_cb — built inside generate_internal
         approval_cb);
+
+    mcp_manager_.remove_tool_hook(hook_id);
 
     // Clean up any approvals still pending (client disconnected mid-flow)
     {
@@ -573,8 +605,17 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
     const int ctx_win    = req.has_params() ? req.params().context_window() : 0;
     const int tok_budget = (ctx_win > 0) ? ctx_win - n_max : 0;
 
-    const std::string tool_system = (mcp_manager_.has_active_tools() && mdl->supports_tool_use())
-        ? mdl->format_tool_system_prompt(mcp_manager_.tools_json())
+    // Resolve tool-use preference: explicit toggle overrides auto-detection.
+    const bool tools_explicitly_disabled =
+        req.has_tool_use_enabled() && !req.tool_use_enabled();
+    const std::vector<std::string> server_filter(
+        req.active_mcp_servers().begin(), req.active_mcp_servers().end());
+    const bool tools_available = !tools_explicitly_disabled
+        && mcp_manager_.has_active_tools(server_filter)
+        && mdl->supports_tool_use();
+
+    const std::string tool_system = tools_available
+        ? mdl->format_tool_system_prompt(mcp_manager_.tools_json(server_filter))
         : std::string{};
     const std::string base_prompt = build_prompt(*mdl, req, tok_budget, tool_system);
     const auto& tok = mdl->tokenizer();
@@ -592,68 +633,38 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
 
     // Encode the initial prompt with BOS; tool injections are appended without BOS.
     std::vector<int> all_tokens = tok.encode(base_prompt, /*add_special_tokens=*/true);
+
+    // Inject client-supplied tool results (remote-node / client-side tool execution).
+    // The service formats each entry using the model's family-specific syntax so
+    // callers never need to know how to wrap tool output.
+    for (int i = 0; i < req.tool_results_size(); ++i) {
+        const auto& tr    = req.tool_results(i);
+        const auto  text  = mdl->format_tool_result(tr.name(), tr.result_json());
+        if (!text.empty()) {
+            const auto injected = tok.encode(text, /*add_special_tokens=*/false);
+            all_tokens.insert(all_tokens.end(), injected.begin(), injected.end());
+        }
+    }
+
     if (prompt_tokens_out) *prompt_tokens_out = static_cast<uint32_t>(all_tokens.size());
 
-    // If no explicit callback provided, use the McpManager if tools are available.
-    if (!tool_cb && mcp_manager_.has_active_tools() && mdl->supports_tool_use()) {
-        const std::string chat_id = req.session_id();
-        tool_cb = mcp_manager_.make_tool_call_cb(session_id, chat_id, approval_cb);
+    // If no explicit callback provided, wire MCP tools when available.
+    if (!tool_cb && tools_available) {
+        const std::string chat_id        = req.session_id();
+        const bool        shell_fallback = req.allow_shell_fallback();
+        tool_cb = mcp_manager_.make_tool_call_cb(
+            session_id, chat_id, approval_cb, server_filter, shell_fallback);
     }
-    const bool can_use_tools = (tool_cb != nullptr) && mdl->supports_tool_use();
-    static constexpr int kMaxToolTurns = 5;
-    uint32_t total_gen = 0;
+    auto run_result = compute::ToolRunner{}.run(
+        *mdl, std::move(all_tokens), static_cast<size_t>(n_max), params,
+        cb, tool_cb, cancelled);
 
-    for (int turn = 0; turn <= kMaxToolTurns; ++turn) {
-        std::vector<int> gen_so_far;
-        std::string decoded_so_far;
-        std::string accumulated;
-        std::optional<compute::LanguageModel::ToolCall> pending_tool;
-
-        auto result = mdl->generate(all_tokens, static_cast<size_t>(n_max), params,
-            [&](int tok_id) -> bool {
-                if (cancelled.load(std::memory_order_relaxed)) return false;
-                if (mdl->config().is_eos_token(tok_id)) return false;
-
-                gen_so_far.push_back(tok_id);
-                const std::string new_decoded = tok.decode(gen_so_far);
-                const std::string delta = new_decoded.substr(decoded_so_far.size());
-                decoded_so_far = new_decoded;
-                accumulated += delta;
-
-                if (can_use_tools) {
-                    auto tc = mdl->detect_tool_call(accumulated);
-                    if (tc.has_value()) {
-                        pending_tool = std::move(tc);
-                        return false;
-                    }
-                }
-                return cb(delta);
-            });
-
-        total_gen += static_cast<uint32_t>(gen_so_far.size());
-
-        if (!result.has_value()) {
-            error_out = "Generation failed: " + result.error().message;
-            return false;
-        }
-
-        if (!pending_tool || turn == kMaxToolTurns) break;
-
-        // Invoke the tool callback — nullopt means denied.
-        auto tool_result = tool_cb(*pending_tool);
-        const std::string result_json = tool_result.value_or(
-            R"({"error":"Tool call denied"})");
-        const std::string injection = mdl->format_tool_result(
-            pending_tool->name, result_json);
-
-        // Extend the token list with what was generated + the injected result.
-        // No BOS on continuations.
-        all_tokens.insert(all_tokens.end(), gen_so_far.begin(), gen_so_far.end());
-        const std::vector<int> inj_tokens = tok.encode(injection, /*add_special_tokens=*/false);
-        all_tokens.insert(all_tokens.end(), inj_tokens.begin(), inj_tokens.end());
+    if (!run_result.has_value()) {
+        error_out = "Generation failed: " + run_result.error().message;
+        return false;
     }
 
-    if (gen_tokens_out) *gen_tokens_out = total_gen;
+    if (gen_tokens_out) *gen_tokens_out = run_result.value();
     return true;
 }
 

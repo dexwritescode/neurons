@@ -1,5 +1,4 @@
 #include "mcp_manager.h"
-#include "builtin_filesystem.h"
 #include "builtin_shell.h"
 
 #include <nlohmann/json.hpp>
@@ -42,8 +41,7 @@ void McpManager::register_builtins() {
     };
 
     const BuiltinDef defs[] = {
-        { "neurons-filesystem", BuiltinFilesystem::handle, BuiltinFilesystem::tool_defs },
-        { "neurons-shell",      BuiltinShell::handle,      BuiltinShell::tool_defs      },
+        { "neurons-shell", BuiltinShell::handle, BuiltinShell::tool_defs },
     };
 
     for (const auto& def : defs) {
@@ -71,11 +69,7 @@ void McpManager::register_builtins() {
         builtin_rules_.push_back(std::move(r));
     };
 
-    add_default("neurons-filesystem", "read_file",    "allow_session");
-    add_default("neurons-filesystem", "list_dir",     "allow_session");
-    add_default("neurons-filesystem", "search_files", "allow_session");
-    add_default("neurons-filesystem", "write_file",   "always_ask");
-    add_default("neurons-shell",      "run_command",  "always_ask");
+    add_default("neurons-shell", "run_command", "always_ask");
 }
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -250,22 +244,28 @@ void McpManager::rebuild_tool_map_locked() {
     }
 }
 
-std::vector<ToolDef> McpManager::list_tools() {
+std::vector<ToolDef> McpManager::list_tools(const std::vector<std::string>& server_filter) {
     std::lock_guard lock(mutex_);
+    const bool filtered = !server_filter.empty();
+    auto allowed = [&](const std::string& name) {
+        if (!filtered) return true;
+        return std::find(server_filter.begin(), server_filter.end(), name) != server_filter.end();
+    };
     std::vector<ToolDef> all;
-    // Built-in tools first.
     for (const auto& cfg : builtin_configs_) {
-        if (!cfg.enabled) continue;
+        if (!cfg.enabled || !allowed(cfg.name)) continue;
         for (const auto& t : builtin_tool_defs_)
             if (t.server_name == cfg.name) all.push_back(t);
     }
-    // External MCP client tools.
-    for (auto& [name, client] : clients_) client->list_tools(all);
+    for (auto& [name, client] : clients_) {
+        if (!allowed(name)) continue;
+        client->list_tools(all);
+    }
     return all;
 }
 
-std::string McpManager::tools_json() {
-    const auto tools = list_tools();
+std::string McpManager::tools_json(const std::vector<std::string>& server_filter) {
+    const auto tools = list_tools(server_filter);
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& t : tools) {
         nlohmann::json tool;
@@ -281,11 +281,17 @@ std::string McpManager::tools_json() {
     return arr.dump();
 }
 
-bool McpManager::has_active_tools() const {
+bool McpManager::has_active_tools(const std::vector<std::string>& server_filter) const {
     std::lock_guard lock(mutex_);
-    if (!clients_.empty()) return true;
+    const bool filtered = !server_filter.empty();
+    auto allowed = [&](const std::string& name) {
+        if (!filtered) return true;
+        return std::find(server_filter.begin(), server_filter.end(), name) != server_filter.end();
+    };
     for (const auto& cfg : builtin_configs_)
-        if (cfg.enabled) return true;
+        if (cfg.enabled && allowed(cfg.name)) return true;
+    for (const auto& [name, _] : clients_)
+        if (allowed(name)) return true;
     return false;
 }
 
@@ -439,9 +445,17 @@ std::string McpManager::resolve_permission(const std::string& server,
 
 // ── Tool hooks ────────────────────────────────────────────────────────────────
 
-void McpManager::add_tool_hook(ToolHook hook) {
+uint64_t McpManager::add_tool_hook(ToolHook hook) {
     std::lock_guard lock(mutex_);
-    hooks_.push_back(std::move(hook));
+    const uint64_t id = ++next_hook_id_;
+    hooks_.emplace_back(id, std::move(hook));
+    return id;
+}
+
+void McpManager::remove_tool_hook(uint64_t handle) {
+    std::lock_guard lock(mutex_);
+    hooks_.erase(std::remove_if(hooks_.begin(), hooks_.end(),
+        [handle](const auto& p) { return p.first == handle; }), hooks_.end());
 }
 
 // ── Unified tool dispatch (hooks → handler → hooks) ───────────────────────────
@@ -452,7 +466,7 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
     // Pre-call hooks (may rewrite args or deny the call).
     {
         std::lock_guard lock(mutex_);
-        for (auto& hook : hooks_) {
+        for (auto& [id, hook] : hooks_) {
             if (hook.pre_call && !hook.pre_call(server_name, tool_name, args_json))
                 return R"({"error":"Call denied by pre-call hook"})";
         }
@@ -487,7 +501,7 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
     // Post-call hooks (may transform or trim result).
     {
         std::lock_guard lock(mutex_);
-        for (auto& hook : hooks_) {
+        for (auto& [id, hook] : hooks_) {
             if (hook.post_call) hook.post_call(server_name, tool_name, args_json, result);
         }
     }
@@ -497,10 +511,12 @@ std::string McpManager::dispatch_tool(const std::string& server_name,
 
 // ── Tool call callback ────────────────────────────────────────────────────────
 
-ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
-                                          const std::string& chat_id,
-                                          ApprovalCb         approval_cb) {
-    return [this, session_id, chat_id, approval_cb](
+ToolCallCb McpManager::make_tool_call_cb(const std::string&              session_id,
+                                          const std::string&              chat_id,
+                                          ApprovalCb                      approval_cb,
+                                          const std::vector<std::string>& server_filter,
+                                          bool                            allow_shell_fallback) {
+    return [this, session_id, chat_id, approval_cb, server_filter, allow_shell_fallback](
                const compute::LanguageModel::ToolCall& call) -> std::optional<std::string> {
 
         // Look up which server owns this tool.
@@ -514,13 +530,65 @@ ToolCallCb McpManager::make_tool_call_cb(const std::string& session_id,
                 server_name = it->second;
             }
         }
+        // If a server filter is active, reject tools from unlisted servers.
+        if (tool_found && !server_filter.empty()) {
+            if (std::find(server_filter.begin(), server_filter.end(), server_name)
+                    == server_filter.end()) {
+                return R"({"error":"Tool server not in active_mcp_servers for this request"})";
+            }
+        }
         if (!tool_found) {
-            // Unknown tool — still check for an explicit deny rule so callers can
-            // block unknown tools via a wildcard rule without getting an error string.
+            // Unknown tool — check for an explicit deny rule first.
             const std::string early = resolve_permission(
                 "", call.name, call.arguments_json, session_id, chat_id);
             if (early == "always_deny") return std::nullopt;
-            return R"({"error":"Tool not found on any connected MCP server"})";
+
+            // Fallback: route through neurons-shell run_command when the caller
+            // explicitly opted in via allow_shell_fallback. Skipped when the flag
+            // is off or neurons-shell is absent.
+            if (!allow_shell_fallback) {
+                return R"({"error":"Tool not found on any connected MCP server"})";
+            }
+            {
+                std::lock_guard lock(mutex_);
+                if (!builtin_handlers_.count("neurons-shell")) {
+                    return R"({"error":"Tool not found on any connected MCP server"})";
+                }
+            }
+
+            // Build the shell command: tool_name + space-joined string arg values.
+            std::string command = call.name;
+            try {
+                auto j = nlohmann::json::parse(call.arguments_json);
+                for (auto& [k, v] : j.items())
+                    if (v.is_string()) command += " " + v.get<std::string>();
+            } catch (...) {}
+            const std::string shell_args = nlohmann::json{{"command", command}}.dump();
+
+            // Permission check against neurons-shell/run_command.
+            const std::string shell_perm = resolve_permission(
+                "neurons-shell", "run_command", shell_args, session_id, chat_id);
+            if (shell_perm == "always_deny") return std::nullopt;
+
+            if (shell_perm == "always_ask") {
+                if (!approval_cb) return std::nullopt;
+
+                ToolApprovalRequest req;
+                req.approval_id = [] {
+                    static std::atomic<uint64_t> counter{0};
+                    return "approval-" + std::to_string(++counter);
+                }();
+                req.server      = "neurons-shell";
+                req.tool        = call.name;   // show original tool name in the UI
+                req.args_json   = call.arguments_json;
+                req.description = "Run: " + command;
+                req.destructive = true;
+
+                auto future = approval_cb(req);
+                if (!future.get()) return std::nullopt;
+            }
+
+            return dispatch_tool("neurons-shell", "run_command", shell_args);
         }
 
         const std::string perm = resolve_permission(

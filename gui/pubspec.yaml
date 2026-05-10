@@ -39,10 +39,10 @@ dependencies:
   fixnum: ^1.1.1
   provider: ^6.1.5+1
   shared_preferences: ^2.5.3
-  flutter_secure_storage: ^9.2.4
+  flutter_secure_storage: ^10.1.0
   flutter_markdown_plus: ^1.0.7
   ffi: ^2.2.0
-  google_fonts: ^6.2.1
+  google_fonts: ^8.1.0
 
 dev_dependencies:
   flutter_test:

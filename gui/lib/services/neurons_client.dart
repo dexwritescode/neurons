@@ -18,6 +18,8 @@ abstract class NeuronsClient {
     SamplingParams? params,
     List<String> activeMcpServers = const [],
     String sessionId = '',
+    bool toolUseEnabled = false,
+    bool allowShellFallback = false,
   });
 
   // Model browser / download
@@ -110,12 +112,16 @@ class GrpcNeuronsClient implements NeuronsClient {
     SamplingParams? params,
     List<String> activeMcpServers = const [],
     String sessionId = '',
+    bool toolUseEnabled = false,
+    bool allowShellFallback = false,
   }) {
     final req = GenerateRequest()
       ..prompt = prompt
       ..history.addAll(history)
       ..activeMcpServers.addAll(activeMcpServers)
-      ..sessionId = sessionId;
+      ..sessionId = sessionId
+      ..toolUseEnabled = toolUseEnabled
+      ..allowShellFallback = allowShellFallback;
     if (params != null) req.params = params;
     return _stub.generate(req);
   }

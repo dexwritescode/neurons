@@ -58,6 +58,7 @@ add_library(compute_backend
     src/compute/model/sampler.cpp
     src/compute/model/chat_template.cpp
     src/compute/model/language_model.cpp
+    src/compute/model/tool_runner.cpp
     src/compute/model/llama_model.cpp
     ${BACKEND_SOURCES}
 )
@@ -122,6 +123,7 @@ if(BUILD_TESTING)
         tests/compute/test_qwen3_moe_integration.cpp
         tests/compute/test_qwen3_transformer_moe_integration.cpp
         tests/compute/test_chat_template.cpp
+        tests/compute/test_tool_runner.cpp
     )
 
     target_link_libraries(compute_tests PRIVATE

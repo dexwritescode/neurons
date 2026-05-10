@@ -919,7 +919,11 @@ std::vector<std::string> SimpleBpeTokenizer::byte_level_split_raw(const std::str
                 }
             }
             if (matched) continue;
-            // Fall through: treat bare ' as punctuation
+            // Not a contraction — emit the apostrophe as a standalone punctuation segment.
+            // Block 4 breaks on '\'' so it can never consume it; handle it here.
+            result.push_back(std::string(1, '\''));
+            ++i;
+            continue;
         }
 
         // ── 5. Newline (possibly with leading whitespace): \s*[\r\n] ──
