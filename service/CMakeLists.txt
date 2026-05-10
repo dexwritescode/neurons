@@ -101,6 +101,7 @@ add_library(neurons_service_lib STATIC
     src/neurons_service.cpp
     src/logger.cpp
     src/http_server.cpp
+    src/service_runner.cpp
     src/mcp/mcp_client.cpp
     src/mcp/mcp_manager.cpp
     src/mcp/builtin_shell.cpp
@@ -122,25 +123,11 @@ target_link_libraries(neurons_service_lib PUBLIC
     compute_backend
     model_manager
     gRPC::grpc++
+    gRPC::grpc++_reflection
     protobuf::libprotobuf
     httplib::httplib
     nlohmann_json::nlohmann_json
 )
-
-# ── Service executable ───────────────────────────────────────────────────────
-add_executable(neurons_service
-    src/main.cpp
-)
-
-target_link_libraries(neurons_service PRIVATE
-    neurons_service_lib
-    gRPC::grpc++_reflection   # enables grpcurl service discovery
-)
-
-# Install — COMPONENT Runtime lets callers do:
-#   cmake --install <build> --component Runtime --prefix <prefix>
-# to install only the service binary without library files.
-install(TARGETS neurons_service RUNTIME DESTINATION bin COMPONENT Runtime)
 
 # ── neurons_core shared library (FFI entry point for Flutter GUI) ─────────────
 # Platform output names: libneurons_core.dylib / neurons_core.dll / libneurons_core.so
