@@ -1,17 +1,28 @@
 name: macOS Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 jobs:
   build-macos:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: macos-26
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Get latest release tag
+        id: tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
@@ -39,10 +50,10 @@ jobs:
           key: cmake-build-release-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', 'compute/src/**', 'service/src/**', 'models/src/**', 'cli/src/**') }}
           restore-keys: cmake-build-release-${{ runner.os }}-
 
-      - name: Build and stage dylib
+      - name: Build (C++ — all targets)
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target neurons_core -j$(sysctl -n hw.logicalcpu)
+          cmake --build build -j$(sysctl -n hw.logicalcpu)
           cmake --install build --component neurons_core --prefix gui/macos/neurons_core_lib
 
       - name: Set up Flutter
@@ -78,12 +89,20 @@ jobs:
             --icon-size 128 \
             --icon "Neurons.app" 180 200 \
             --app-drop-link 480 200 \
-            "Neurons-${{ github.event.release.tag_name }}-arm64.dmg" \
+            "Neurons-${{ steps.tag.outputs.tag }}-arm64.dmg" \
             "gui/build/macos/Build/Products/Release/Neurons.app"
 
       - name: Upload DMG to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "Neurons-${{ github.event.release.tag_name }}-arm64.dmg"
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            "Neurons-${{ steps.tag.outputs.tag }}-arm64.dmg"
+
+      - name: Upload neuron binary to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp build/bin/neuron "neuron-${{ steps.tag.outputs.tag }}-arm64"
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            "neuron-${{ steps.tag.outputs.tag }}-arm64"

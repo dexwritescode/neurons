@@ -5,9 +5,7 @@
 
 namespace neurons::cli {
 
-// Starts the neurons-service binary (HTTP + gRPC) as a subprocess,
-// streaming its logs to stdout. The binary must be in the same directory
-// as the cli executable, or on PATH.
+// Starts the Neurons inference server (HTTP + gRPC) in-process.
 class ServerCommand : public BaseCommand {
 public:
     explicit ServerCommand(NeuronsConfig* config);

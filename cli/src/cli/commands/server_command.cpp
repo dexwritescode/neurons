@@ -1,13 +1,7 @@
 #include "server_command.h"
+#include "service_runner.h"
 
-#include <filesystem>
 #include <iostream>
-#include <unistd.h>
-#include <cstdlib>
-
-#if defined(__APPLE__)
-#  include <mach-o/dyld.h>
-#endif
 
 namespace neurons::cli {
 
@@ -26,56 +20,10 @@ void ServerCommand::setup_command(CLI::App& app) {
 
 int ServerCommand::execute() {
     (void)config_;
-    // Look for neurons-service next to this binary, or on PATH.
-    std::filesystem::path self;
-    {
-        char buf[4096] = {};
-#if defined(__APPLE__)
-        uint32_t size = static_cast<uint32_t>(sizeof(buf));
-        _NSGetExecutablePath(buf, &size);
-#elif defined(__linux__)
-        readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-#endif
-        self = std::filesystem::path(buf).parent_path();
-    }
-
-    std::string service_bin;
-    const auto candidate = self / "neurons_service";
-    if (std::filesystem::exists(candidate)) {
-        service_bin = candidate.string();
-    } else {
-        // Fall back to PATH
-        service_bin = "neurons_service";
-    }
-
-    // Build argv for exec
-    std::string grpc_port_s = std::to_string(grpc_port_);
-    std::string http_port_s = std::to_string(http_port_);
-
-    std::vector<std::string> args_storage = {
-        service_bin,
-        "--port",      grpc_port_s,
-        "--http-port", http_port_s,
-    };
-    if (!model_.empty()) {
-        args_storage.push_back("--model");
-        args_storage.push_back(model_);
-    }
-
-    std::vector<char*> argv;
-    for (auto& s : args_storage) argv.push_back(s.data());
-    argv.push_back(nullptr);
-
-    std::cout << "Starting " << service_bin
-              << " (gRPC :" << grpc_port_ << ", HTTP :" << http_port_ << ")\n";
+    std::cout << "Starting inference server (gRPC :" << grpc_port_
+              << ", HTTP :" << http_port_ << ")\n";
     std::cout << "OpenAI endpoint: http://localhost:" << http_port_ << "/v1\n\n";
-
-    execvp(argv[0], argv.data());
-
-    // execvp only returns on error
-    std::cerr << "Failed to exec '" << service_bin << "': " << strerror(errno) << "\n";
-    std::cerr << "Make sure neurons_service is built and in PATH or next to the cli binary.\n";
-    return 1;
+    return neurons_service::run(static_cast<uint16_t>(grpc_port_), http_port_, model_);
 }
 
 } // namespace neurons::cli

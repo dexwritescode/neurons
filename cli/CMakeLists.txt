@@ -147,8 +147,16 @@ else()
     target_link_libraries(cli PRIVATE tabulate)
 endif()
 
-target_link_libraries(cli PRIVATE model_manager)
-target_link_libraries(cli PRIVATE compute_backend)
+# neurons_service_lib provides the in-process server (neuron serve).
+# It transitively pulls in compute_backend, model_manager, neurons_proto, gRPC, httplib, and nlohmann_json.
+# Fall back to explicit links when building without the service subdirectory.
+if(TARGET neurons_service_lib)
+    target_link_libraries(cli PRIVATE neurons_service_lib)
+    target_compile_definitions(cli PRIVATE NEURONS_SERVICE_ENABLED)
+else()
+    target_link_libraries(cli PRIVATE model_manager)
+    target_link_libraries(cli PRIVATE compute_backend)
+endif()
 
 # Remote node support: link neurons_proto (which pulls in gRPC and protobuf)
 # when the service subdirectory was included (gRPC found at the top level).
