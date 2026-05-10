@@ -117,8 +117,14 @@ void OpenAiHttpServer::handleModels(const httplib::Request&, httplib::Response& 
 
 // ── POST /v1/chat/completions ─────────────────────────────────────────────────
 
+static std::string generateCallId() {
+    static std::mt19937_64 rng{std::random_device{}()};
+    std::ostringstream ss;
+    ss << "call_" << std::hex << rng();
+    return ss.str();
+}
+
 void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httplib::Response& res) {
-    // Parse request body
     json body;
     try {
         body = json::parse(req.body);
@@ -130,17 +136,184 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
     }
 
     const bool stream = body.value("stream", false);
+    const std::string id    = generateId();
+    const std::string model = body.value("model", "neurons");
 
-    // Build GenerateRequest from OpenAI messages
+    // Detect whether this is a tool-use request.
+    const json& tools_arr   = body.contains("tools") ? body["tools"] : json(nullptr);
+    const std::string tool_choice = body.value("tool_choice", "auto");
+    const bool tools_requested =
+        !tools_arr.is_null() && tools_arr.is_array() &&
+        !tools_arr.empty()   && tool_choice != "none";
+
+    const json& messages = body.contains("messages") ? body["messages"] : json::array();
+
+    // Sampling params proto (shared between both paths).
+    neurons::SamplingParams params_proto;
+    if (body.contains("temperature")) params_proto.set_temperature(body["temperature"].get<float>());
+    if (body.contains("top_p"))       params_proto.set_top_p(body["top_p"].get<float>());
+    const int max_tokens = body.value("max_tokens", 0);
+
+    // ── Tool-use path (Option B: client-side execution) ───────────────────────
+    if (tools_requested) {
+        if (!stream) {
+            std::string full_content;
+            std::string error_out;
+            NeuronsServiceImpl::HttpCompletionResult result;
+
+            bool ok = service_.generate_http_completion(
+                messages, tools_arr, params_proto, max_tokens,
+                [&](const std::string& delta) -> bool {
+                    full_content += delta;
+                    return true;
+                },
+                result, error_out);
+
+            addCors(res);
+            if (!ok) {
+                json err = {{"error", {{"message", error_out}, {"type", "server_error"}}}};
+                res.status = 500;
+                res.set_content(err.dump(), "application/json");
+                return;
+            }
+
+            json choice;
+            if (result.tool_call) {
+                const std::string call_id = generateCallId();
+                choice = {
+                    {"index", 0},
+                    {"message", {
+                        {"role",       "assistant"},
+                        {"content",    nullptr},
+                        {"tool_calls", json::array({{
+                            {"id",   call_id},
+                            {"type", "function"},
+                            {"function", {
+                                {"name",      result.tool_call->name},
+                                {"arguments", result.tool_call->arguments_json}
+                            }}
+                        }})}
+                    }},
+                    {"finish_reason", "tool_calls"}
+                };
+            } else {
+                choice = {
+                    {"index",         0},
+                    {"message",       {{"role", "assistant"}, {"content", full_content}}},
+                    {"finish_reason", "stop"}
+                };
+            }
+
+            json resp = {
+                {"id",      id},
+                {"object",  "chat.completion"},
+                {"created", unixSec()},
+                {"model",   model},
+                {"choices", json::array({choice})},
+                {"usage",   {
+                    {"prompt_tokens",     static_cast<int>(result.prompt_tokens)},
+                    {"completion_tokens", static_cast<int>(result.gen_tokens)},
+                    {"total_tokens",      static_cast<int>(result.prompt_tokens + result.gen_tokens)}
+                }}
+            };
+            res.set_content(resp.dump(), "application/json");
+            return;
+        }
+
+        // Streaming + tools
+        addCors(res);
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("X-Accel-Buffering", "no");
+
+        res.set_chunked_content_provider("text/event-stream",
+            [this, messages, tools_arr, params_proto, max_tokens, id, model]
+            (size_t /*offset*/, httplib::DataSink& sink) mutable -> bool {
+
+                // Role announce chunk
+                json first = {
+                    {"id", id}, {"object", "chat.completion.chunk"},
+                    {"created", unixSec()}, {"model", model},
+                    {"choices", json::array({{
+                        {"index", 0},
+                        {"delta", {{"role", "assistant"}}},
+                        {"finish_reason", nullptr}
+                    }})}
+                };
+                std::string ev = "data: " + first.dump() + "\n\n";
+                if (!sink.write(ev.c_str(), ev.size())) return false;
+
+                std::string error_out;
+                NeuronsServiceImpl::HttpCompletionResult result;
+
+                service_.generate_http_completion(
+                    messages, tools_arr, params_proto, max_tokens,
+                    [&](const std::string& delta) -> bool {
+                        if (!sink.is_writable()) return false;
+                        json chunk = {
+                            {"id", id}, {"object", "chat.completion.chunk"},
+                            {"created", unixSec()}, {"model", model},
+                            {"choices", json::array({{
+                                {"index", 0},
+                                {"delta", {{"content", delta}}},
+                                {"finish_reason", nullptr}
+                            }})}
+                        };
+                        std::string cev = "data: " + chunk.dump() + "\n\n";
+                        return sink.write(cev.c_str(), cev.size());
+                    },
+                    result, error_out);
+
+                // Final chunk — tool call or stop
+                json final_chunk;
+                if (result.tool_call) {
+                    const std::string call_id = generateCallId();
+                    final_chunk = {
+                        {"id", id}, {"object", "chat.completion.chunk"},
+                        {"created", unixSec()}, {"model", model},
+                        {"choices", json::array({{
+                            {"index", 0},
+                            {"delta", {
+                                {"tool_calls", json::array({{
+                                    {"index", 0},
+                                    {"id",   call_id},
+                                    {"type", "function"},
+                                    {"function", {
+                                        {"name",      result.tool_call->name},
+                                        {"arguments", result.tool_call->arguments_json}
+                                    }}
+                                }})}
+                            }},
+                            {"finish_reason", "tool_calls"}
+                        }})}
+                    };
+                } else {
+                    final_chunk = {
+                        {"id", id}, {"object", "chat.completion.chunk"},
+                        {"created", unixSec()}, {"model", model},
+                        {"choices", json::array({{
+                            {"index", 0},
+                            {"delta", json::object()},
+                            {"finish_reason", "stop"}
+                        }})}
+                    };
+                }
+                ev = "data: " + final_chunk.dump() + "\n\n";
+                sink.write(ev.c_str(), ev.size());
+                sink.write("data: [DONE]\n\n", 14);
+                sink.done();
+                return true;
+            });
+        return;
+    }
+
+    // ── Non-tool path (existing behaviour) ───────────────────────────────────
     neurons::GenerateRequest greq;
 
-    const auto& messages = body.value("messages", json::array());
     std::string last_user_content;
     for (const auto& m : messages) {
         const std::string role    = m.value("role", "");
         const std::string content = m.value("content", "");
         if (role == "user") {
-            // The last user message becomes the prompt; earlier ones go to history
             if (!last_user_content.empty()) {
                 auto* h = greq.add_history();
                 h->set_role("user");
@@ -152,35 +325,29 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
             h->set_role("assistant");
             h->set_content(content);
         } else if (role == "system") {
-            // system message: prepend to first user turn as [role: system]
-            // For now inject into history so build_prompt can pick it up
             auto* h = greq.add_history();
             h->set_role("system");
             h->set_content(content);
+        } else if (role == "tool") {
+            auto* tr = greq.add_tool_results();
+            tr->set_name(m.value("name", ""));
+            tr->set_result_json(content);
         }
     }
     greq.set_prompt(last_user_content);
 
-    // Sampling params
     auto* p = greq.mutable_params();
-    if (body.contains("temperature")) p->set_temperature(body["temperature"].get<float>());
-    if (body.contains("top_p"))       p->set_top_p(body["top_p"].get<float>());
-    if (body.contains("max_tokens"))  p->set_max_tokens(body["max_tokens"].get<int>());
-
-    const std::string id     = generateId();
-    const std::string model  = body.value("model", "neurons");
+    *p = params_proto;
+    if (max_tokens > 0) p->set_max_tokens(max_tokens);
 
     if (!stream) {
-        // Non-streaming: collect full response then return
         std::string full_content;
         std::string error_out;
         std::atomic<bool> cancelled{false};
 
         bool ok = service_.generate_internal(greq, cancelled,
-            [&](const std::string& tok) {
-                full_content += tok;
-                return true;
-            }, error_out);
+            [&](const std::string& tok) { full_content += tok; return true; },
+            error_out);
 
         addCors(res);
         if (!ok) {
@@ -195,20 +362,18 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
             {"object",  "chat.completion"},
             {"created", unixSec()},
             {"model",   model},
-            {"choices", json::array({
-                {
-                    {"index",         0},
-                    {"message",       {{"role", "assistant"}, {"content", full_content}}},
-                    {"finish_reason", "stop"}
-                }
-            })},
+            {"choices", json::array({{
+                {"index",         0},
+                {"message",       {{"role", "assistant"}, {"content", full_content}}},
+                {"finish_reason", "stop"}
+            }})},
             {"usage", {{"prompt_tokens", 0}, {"completion_tokens", 0}, {"total_tokens", 0}}}
         };
         res.set_content(resp.dump(), "application/json");
         return;
     }
 
-    // Streaming SSE
+    // Streaming, no tools
     addCors(res);
     res.set_header("Cache-Control", "no-cache");
     res.set_header("X-Accel-Buffering", "no");
@@ -217,59 +382,48 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
     std::atomic<bool> cancelled{false};
 
     res.set_chunked_content_provider("text/event-stream",
-        [this, greq, id, model, &cancelled, &error_out](size_t /*offset*/, httplib::DataSink& sink) mutable -> bool {
-            // Role delta (first chunk)
+        [this, greq, id, model, &cancelled, &error_out]
+        (size_t /*offset*/, httplib::DataSink& sink) mutable -> bool {
             json first = {
-                {"id",      id},
-                {"object",  "chat.completion.chunk"},
-                {"created", unixSec()},
-                {"model",   model},
+                {"id", id}, {"object", "chat.completion.chunk"},
+                {"created", unixSec()}, {"model", model},
                 {"choices", json::array({{
-                    {"index",         0},
-                    {"delta",         {{"role", "assistant"}}},
+                    {"index", 0},
+                    {"delta", {{"role", "assistant"}}},
                     {"finish_reason", nullptr}
                 }})}
             };
-            std::string first_ev = "data: " + first.dump() + "\n\n";
-            if (!sink.write(first_ev.c_str(), first_ev.size())) { cancelled = true; return false; }
+            std::string ev = "data: " + first.dump() + "\n\n";
+            if (!sink.write(ev.c_str(), ev.size())) { cancelled = true; return false; }
 
-            bool ok = service_.generate_internal(greq, cancelled,
+            service_.generate_internal(greq, cancelled,
                 [&](const std::string& tok) -> bool {
                     if (!sink.is_writable()) { cancelled = true; return false; }
                     json chunk = {
-                        {"id",      id},
-                        {"object",  "chat.completion.chunk"},
-                        {"created", unixSec()},
-                        {"model",   model},
+                        {"id", id}, {"object", "chat.completion.chunk"},
+                        {"created", unixSec()}, {"model", model},
                         {"choices", json::array({{
-                            {"index",         0},
-                            {"delta",         {{"content", tok}}},
+                            {"index", 0},
+                            {"delta", {{"content", tok}}},
                             {"finish_reason", nullptr}
                         }})}
                     };
-                    std::string ev = "data: " + chunk.dump() + "\n\n";
-                    return sink.write(ev.c_str(), ev.size());
+                    std::string cev = "data: " + chunk.dump() + "\n\n";
+                    return sink.write(cev.c_str(), cev.size());
                 }, error_out);
 
-            (void)ok;
-
-            // Final stop chunk
             json stop_chunk = {
-                {"id",      id},
-                {"object",  "chat.completion.chunk"},
-                {"created", unixSec()},
-                {"model",   model},
+                {"id", id}, {"object", "chat.completion.chunk"},
+                {"created", unixSec()}, {"model", model},
                 {"choices", json::array({{
-                    {"index",         0},
-                    {"delta",         json::object()},
+                    {"index", 0},
+                    {"delta", json::object()},
                     {"finish_reason", "stop"}
                 }})}
             };
-            std::string stop_ev = "data: " + stop_chunk.dump() + "\n\n";
-            sink.write(stop_ev.c_str(), stop_ev.size());
-
-            std::string done_ev = "data: [DONE]\n\n";
-            sink.write(done_ev.c_str(), done_ev.size());
+            ev = "data: " + stop_chunk.dump() + "\n\n";
+            sink.write(ev.c_str(), ev.size());
+            sink.write("data: [DONE]\n\n", 14);
             sink.done();
             return true;
         });

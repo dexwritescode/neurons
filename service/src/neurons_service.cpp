@@ -6,6 +6,8 @@
 #include "compute/model/chat_template.h"
 #include "models/registry/model_registry.h"
 
+#include <nlohmann/json.hpp>
+
 #include <grpcpp/grpcpp.h>
 #include <chrono>
 #include <condition_variable>
@@ -664,7 +666,139 @@ bool NeuronsServiceImpl::generate_internal(const neurons::GenerateRequest& req,
         return false;
     }
 
-    if (gen_tokens_out) *gen_tokens_out = run_result.value();
+    if (gen_tokens_out) *gen_tokens_out = run_result->gen_tokens;
+    return true;
+}
+
+// ── generate_http_completion ─────────────────────────────────────────────────
+// OpenAI client-side execution model: detect tool calls, surface them, stop.
+// The caller (HTTP handler) returns the tool call to the client; the client
+// executes and sends results back in a subsequent request as role:"tool" msgs.
+
+bool NeuronsServiceImpl::generate_http_completion(
+        const nlohmann::json&          messages,
+        const nlohmann::json&          tools,
+        const neurons::SamplingParams& params_proto,
+        int                            max_tokens,
+        GenerateTokenCb                token_cb,
+        HttpCompletionResult&          result_out,
+        std::string&                   error_out) {
+
+    using json = nlohmann::json;
+
+    compute::LanguageModel* mdl = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(model_mutex_);
+        mdl = model_.get();
+    }
+    if (!mdl) { error_out = "No model loaded"; return false; }
+
+    const std::string model_type = mdl->model_type();
+    const auto& tok = mdl->tokenizer();
+    const bool is_llama3 = (model_type == "llama") &&
+        (tok.find_token_id("<|start_header_id|>") != -1);
+
+    // ── System prompt ─────────────────────────────────────────────────────────
+    std::string system_prompt;
+    for (const auto& m : messages) {
+        if (m.value("role", "") == "system") {
+            system_prompt = m.value("content", "");
+            break;
+        }
+    }
+    if (system_prompt.empty()) system_prompt = "You are a helpful assistant.";
+
+    const bool tools_requested =
+        !tools.is_null() && tools.is_array() && !tools.empty();
+    if (tools_requested && mdl->supports_tool_use()) {
+        const std::string tool_json = mcp_manager_.tools_json({});
+        if (!tool_json.empty())
+            system_prompt += "\n\n" + mdl->format_tool_system_prompt(tool_json);
+    }
+
+    // ── Tool result inner-content helper ─────────────────────────────────────
+    // apply_chat_template wraps content in role markers, so we supply only the
+    // inner content (no <|im_start|> etc).  Qwen25 needs <tool_response> wrapper;
+    // other families pass the result JSON directly.
+    auto tool_result_inner = [&](const std::string& result) -> std::string {
+        if (model_type == "qwen2" || model_type == "qwen3" ||
+            model_type == "qwen3_5_moe")
+            return "<tool_response>\n" + result + "\n</tool_response>";
+        return result;
+    };
+
+    // ── Build ChatMessage list ────────────────────────────────────────────────
+    std::vector<compute::ChatMessage> chat_msgs;
+    for (size_t i = 0; i < messages.size(); ++i) {
+        const auto& m = messages[i];
+        const std::string role = m.value("role", "");
+
+        if (role == "system") {
+            continue; // handled above
+        } else if (role == "user") {
+            chat_msgs.push_back({"user", m.value("content", "")});
+        } else if (role == "assistant") {
+            if (m.contains("tool_calls") && m["tool_calls"].is_array()
+                    && !m["tool_calls"].empty()) {
+                // Encode the assistant's tool call(s) as <tool_call> content.
+                // We encode the first call; multi-call parallel support is future work.
+                const auto& tc   = m["tool_calls"][0];
+                const std::string name     = tc["function"]["name"].get<std::string>();
+                const std::string args_str = tc["function"]["arguments"].get<std::string>();
+                json args_obj;
+                try { args_obj = json::parse(args_str); }
+                catch (...) { args_obj = args_str; }
+                const std::string call_content =
+                    "<tool_call>{\"name\":\"" + name +
+                    "\",\"arguments\":" + args_obj.dump() + "}</tool_call>";
+                chat_msgs.push_back({"assistant", call_content});
+            } else {
+                const std::string content = m.value("content", "");
+                if (!content.empty())
+                    chat_msgs.push_back({"assistant", content});
+            }
+        } else if (role == "tool") {
+            // Mistral doesn't have a "tool" role in its template — map to user.
+            const std::string effective_role =
+                (model_type == "mistral") ? "user" : "tool";
+            const std::string result_content = m.value("content", "");
+            chat_msgs.push_back({effective_role, tool_result_inner(result_content)});
+        }
+    }
+
+    // ── Encode prompt ─────────────────────────────────────────────────────────
+    const std::string prompt =
+        compute::apply_chat_template(model_type, is_llama3, system_prompt, chat_msgs);
+
+    const int n_max = [&]() -> int {
+        if (max_tokens > 0)
+            return mdl->is_reasoning_model() ? std::max(max_tokens, 4096) : max_tokens;
+        return mdl->is_reasoning_model() ? 4096 : 1024;
+    }();
+
+    std::vector<int> token_ids = tok.encode(prompt, /*add_special_tokens=*/true);
+    result_out.prompt_tokens   = static_cast<uint32_t>(token_ids.size());
+
+    // ── Sampling params ───────────────────────────────────────────────────────
+    compute::SamplingParams params;
+    params.temperature = params_proto.temperature();
+    params.top_p       = params_proto.top_p()       > 0.0f ? params_proto.top_p()       : 0.9f;
+    params.top_k       = params_proto.top_k()       > 0    ? params_proto.top_k()       : 40;
+    params.rep_penalty = params_proto.rep_penalty()  > 0.0f ? params_proto.rep_penalty() : 1.1f;
+
+    // ── Run — client-side execution: tool_cb is null ──────────────────────────
+    std::atomic<bool> cancelled{false};
+    auto run_result = compute::ToolRunner{}.run(
+        *mdl, std::move(token_ids), static_cast<size_t>(n_max),
+        params, token_cb, /*tool_cb=*/nullptr, cancelled);
+
+    if (!run_result.has_value()) {
+        error_out = "Generation failed: " + run_result.error().message;
+        return false;
+    }
+
+    result_out.gen_tokens = run_result->gen_tokens;
+    result_out.tool_call  = std::move(run_result->pending_tool);
     return true;
 }
 

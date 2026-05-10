@@ -183,7 +183,7 @@ TEST_F(ToolRunnerE2ETest, ReadFileTool_DispatchedAndResultInjected) {
         cancelled);
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_GT(result.value(), 0u);
+    EXPECT_GT(result->gen_tokens, 0u);
     // The second turn's text was streamed after the tool result injection.
     EXPECT_THAT(output, ::testing::HasSubstr("The file says"));
 }
