@@ -20,7 +20,7 @@ jobs:
         run: |
           TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 \
             --json tagName,publishedAt \
-            --jq --arg t "${{ github.event.workflow_run.run_started_at }}" \
+            | jq -r --arg t "${{ github.event.workflow_run.run_started_at }}" \
             '[.[] | select(.publishedAt > $t)] | .[0].tagName // ""')
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
