@@ -7,22 +7,32 @@ on:
     branches: [main]
 
 jobs:
-  build-macos:
+  check-release:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Check for new release
+        id: tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(gh release list --repo "${{ github.repository }}" --limit 1 \
+            --json tagName,publishedAt \
+            --jq --arg t "${{ github.event.workflow_run.run_started_at }}" \
+            '[.[] | select(.publishedAt > $t)] | .[0].tagName // ""')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: check-release
+    if: needs.check-release.outputs.tag != ''
     runs-on: macos-26
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Get latest release tag
-        id: tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
@@ -89,20 +99,20 @@ jobs:
             --icon-size 128 \
             --icon "Neurons.app" 180 200 \
             --app-drop-link 480 200 \
-            "Neurons-${{ steps.tag.outputs.tag }}-arm64.dmg" \
+            "Neurons-${{ needs.check-release.outputs.tag }}-arm64.dmg" \
             "gui/build/macos/Build/Products/Release/Neurons.app"
 
       - name: Upload DMG to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ steps.tag.outputs.tag }}" \
-            "Neurons-${{ steps.tag.outputs.tag }}-arm64.dmg"
+          gh release upload "${{ needs.check-release.outputs.tag }}" \
+            "Neurons-${{ needs.check-release.outputs.tag }}-arm64.dmg"
 
       - name: Upload neuron binary to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp build/bin/neuron "neuron-${{ steps.tag.outputs.tag }}-arm64"
-          gh release upload "${{ steps.tag.outputs.tag }}" \
-            "neuron-${{ steps.tag.outputs.tag }}-arm64"
+          cp build/bin/neuron "neuron-${{ needs.check-release.outputs.tag }}-arm64"
+          gh release upload "${{ needs.check-release.outputs.tag }}" \
+            "neuron-${{ needs.check-release.outputs.tag }}-arm64"
