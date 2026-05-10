@@ -334,7 +334,7 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
                 std::cerr << "Error during generation: " << tool_result.error().message << "\n";
                 return 1;
             }
-            total_tokens = tool_result.value();
+            total_tokens = tool_result->gen_tokens;
         } else {
             // ── Standard path: single-turn generate with full-sequence decode.
             auto gen_result = inference->generate(

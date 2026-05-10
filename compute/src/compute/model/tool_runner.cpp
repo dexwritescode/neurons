@@ -5,7 +5,7 @@
 
 namespace compute {
 
-Result<uint32_t> ToolRunner::run(
+Result<ToolRunResult> ToolRunner::run(
         LanguageModel&           model,
         std::vector<int>         all_tokens,
         size_t                   max_new_tokens,
@@ -14,9 +14,10 @@ Result<uint32_t> ToolRunner::run(
         ToolCallCb               tool_cb,
         const std::atomic<bool>& cancelled) {
 
-    const auto& tok = model.tokenizer();
-    const bool can_use_tools = (tool_cb != nullptr) && model.supports_tool_use();
-    uint32_t total_gen = 0;
+    const auto& tok       = model.tokenizer();
+    const bool can_detect = model.supports_tool_use();
+    const bool can_execute = can_detect && (tool_cb != nullptr);
+    ToolRunResult out{};
 
     for (int turn = 0; turn <= kMaxToolTurns; ++turn) {
         std::vector<int> gen_so_far;
@@ -35,7 +36,7 @@ Result<uint32_t> ToolRunner::run(
                 decoded_so_far = new_decoded;
                 accumulated += delta;
 
-                if (can_use_tools) {
+                if (can_detect) {
                     auto tc = model.detect_tool_call(accumulated);
                     if (tc.has_value()) {
                         pending_tool = std::move(tc);
@@ -49,14 +50,20 @@ Result<uint32_t> ToolRunner::run(
                 return token_cb(delta);
             });
 
-        total_gen += static_cast<uint32_t>(gen_so_far.size());
+        out.gen_tokens += static_cast<uint32_t>(gen_so_far.size());
 
         if (!result.has_value())
             return std::unexpected(result.error());
 
         if (!pending_tool || turn == kMaxToolTurns) break;
 
-        // Invoke the tool — nullopt means denied.
+        // Client-side execution: surface the tool call and stop.
+        if (!can_execute) {
+            out.pending_tool = std::move(pending_tool);
+            break;
+        }
+
+        // Server-side execution: invoke the tool, inject the result, continue.
         auto tool_result = tool_cb(*pending_tool);
         const std::string result_json = tool_result.value_or(
             R"({"error":"Tool call denied"})");
@@ -70,7 +77,7 @@ Result<uint32_t> ToolRunner::run(
         all_tokens.insert(all_tokens.end(), inj_tokens.begin(), inj_tokens.end());
     }
 
-    return total_gen;
+    return out;
 }
 
 } // namespace compute

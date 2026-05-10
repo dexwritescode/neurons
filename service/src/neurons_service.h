@@ -9,12 +9,14 @@
 #include "mcp/mcp_manager.h"
 
 #include <grpcpp/grpcpp.h>
+#include <nlohmann/json.hpp>
 #include <atomic>
 #include <functional>
 #include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace neurons_service {
@@ -139,6 +141,30 @@ public:
                            uint32_t*                       gen_tokens_out    = nullptr,
                            ToolCallCb                      tool_cb           = nullptr,
                            ApprovalCb                      approval_cb       = nullptr);
+
+    // Result returned by generate_http_completion().
+    struct HttpCompletionResult {
+        std::string content;    // populated when finish_reason == "stop"
+        std::optional<compute::LanguageModel::ToolCall> tool_call; // set when finish_reason == "tool_calls"
+        uint32_t gen_tokens    = 0;
+        uint32_t prompt_tokens = 0;
+    };
+
+    // OpenAI-compat HTTP inference path — client-side tool execution model.
+    // Builds the prompt from the raw OpenAI messages array (handles all roles:
+    // system, user, assistant, assistant+tool_calls, tool). Runs ToolRunner
+    // with tool_cb=null so detection is on but execution is off. When the model
+    // emits a tool call, generation stops and result_out.tool_call is populated
+    // (caller returns finish_reason: "tool_calls"). Otherwise result_out.content
+    // holds the full text (finish_reason: "stop").
+    // token_cb is called with each text delta during streaming.
+    bool generate_http_completion(const nlohmann::json&          messages,
+                                  const nlohmann::json&          tools,
+                                  const neurons::SamplingParams& params_proto,
+                                  int                            max_tokens,
+                                  GenerateTokenCb                token_cb,
+                                  HttpCompletionResult&          result_out,
+                                  std::string&                   error_out);
 
     // Callback receives (bytes_done, bytes_total, speed_bps, current_file).
     // Return false to cancel.

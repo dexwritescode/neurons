@@ -159,7 +159,7 @@ TEST_F(ToolRunnerTest, NoToolCb_SingleTurnStreamsAllTokens) {
         cancelled);
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_GT(result.value(), 0u);
+    EXPECT_GT(result->gen_tokens, 0u);
     EXPECT_THAT(output, ::testing::HasSubstr("Hello"));
 }
 
@@ -224,7 +224,7 @@ TEST_F(ToolRunnerTest, TokenCbReturnsFalse_StopsGeneration) {
         cancelled);
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_LT(result.value(), 20u);  // stopped early, not all tokens generated
+    EXPECT_LT(result->gen_tokens, 20u);  // stopped early, not all tokens generated
 }
 
 // Setting the cancelled flag stops generation.
@@ -245,7 +245,7 @@ TEST_F(ToolRunnerTest, CancelledFlag_StopsGeneration) {
         cancelled);
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_LT(result.value(), 20u);
+    EXPECT_LT(result->gen_tokens, 20u);
 }
 
 // After kMaxToolTurns tool invocations the loop terminates without invoking the

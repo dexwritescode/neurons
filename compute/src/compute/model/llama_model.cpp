@@ -297,7 +297,8 @@ std::string LlamaModel::format_tool_result(const std::string& /*tool_name*/,
                                             const std::string& result_json) const {
     switch (tool_family_) {
     case ToolFamily::Qwen25:
-        return "\n<tool_response>\n" + result_json + "\n</tool_response>\n";
+        return "<|im_start|>tool\n<tool_response>\n" + result_json +
+               "\n</tool_response>\n<|im_end|>\n<|im_start|>assistant\n";
     case ToolFamily::Llama31:
         return "<|start_header_id|>tool<|end_header_id|>\n\n" + result_json +
                "<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n\n";
