@@ -711,9 +711,14 @@ bool NeuronsServiceImpl::generate_http_completion(
     const bool tools_requested =
         !tools.is_null() && tools.is_array() && !tools.empty();
     if (tools_requested && mdl->supports_tool_use()) {
-        const std::string tool_json = mcp_manager_.tools_json({});
-        if (!tool_json.empty())
-            system_prompt += "\n\n" + mdl->format_tool_system_prompt(tool_json);
+        // Convert OpenAI tools array [{type:"function", function:{name,description,parameters}}]
+        // to simple [{name, description, parameters}] that format_tool_system_prompt expects.
+        json simple_tools = json::array();
+        for (const auto& t : tools) {
+            if (t.contains("function")) simple_tools.push_back(t["function"]);
+            else                        simple_tools.push_back(t);
+        }
+        system_prompt += "\n\n" + mdl->format_tool_system_prompt(simple_tools.dump());
     }
 
     // ── Tool result inner-content helper ─────────────────────────────────────
