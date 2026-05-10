@@ -56,6 +56,7 @@ jobs:
         run: cmake --build build -j$(sysctl -n hw.logicalcpu)
 
   build-release:
+    if: github.event_name == 'push'
     runs-on: macos-26
 
     steps:
