@@ -16,6 +16,90 @@ namespace neurons_service {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Strip all <think>...</think> blocks from a completed string.
+// Tags are hardcoded for current shipping reasoning models (Qwen3, DeepSeek-R1,
+// QwQ). Neurons-w70 F.16.6 will make this template-driven.
+static std::string stripThinkBlocks(const std::string& s) {
+    std::string out;
+    size_t pos = 0;
+    while (pos < s.size()) {
+        const size_t open = s.find("<think>", pos);
+        if (open == std::string::npos) { out += s.substr(pos); break; }
+        out += s.substr(pos, open - pos);
+        const size_t close = s.find("</think>", open);
+        if (close == std::string::npos) break;
+        pos = close + 8;
+        while (pos < s.size() && s[pos] == '\n') ++pos;
+    }
+    return out;
+}
+
+// Stateful streaming filter: suppresses <think>...</think> content from SSE
+// deltas. Feed each decoded delta to operator(); call finalize() after the last
+// token to flush any buffered tail. Returns false if the inner emit cb returns
+// false (signals cancellation to the caller).
+struct ThinkStreamFilter {
+    using EmitCb = std::function<bool(const std::string&)>;
+    explicit ThinkStreamFilter(EmitCb cb) : emit_(std::move(cb)) {}
+
+    bool operator()(const std::string& delta) {
+        decoded_ += delta;
+        return flush();
+    }
+
+    bool finalize() {
+        if (!in_think_ && print_pos_ < decoded_.size())
+            return emit_(decoded_.substr(print_pos_));
+        return true;
+    }
+
+private:
+    static constexpr size_t      kHold  = 7; // len("</think>") - 1
+    static constexpr const char* kOpen  = "<think>";
+    static constexpr const char* kClose = "</think>";
+
+    bool flush() {
+        while (print_pos_ < decoded_.size()) {
+            if (!in_think_) {
+                const size_t pos = decoded_.find(kOpen, print_pos_);
+                if (pos == std::string::npos) {
+                    const size_t safe = decoded_.size() > kHold
+                                      ? decoded_.size() - kHold : print_pos_;
+                    if (safe > print_pos_) {
+                        if (!emit_(decoded_.substr(print_pos_, safe - print_pos_)))
+                            return false;
+                        print_pos_ = safe;
+                    }
+                    break;
+                }
+                if (pos > print_pos_)
+                    if (!emit_(decoded_.substr(print_pos_, pos - print_pos_)))
+                        return false;
+                print_pos_ = pos + 7; // len("<think>")
+                in_think_  = true;
+            } else {
+                const size_t pos = decoded_.find(kClose, print_pos_);
+                if (pos == std::string::npos) {
+                    const size_t safe = decoded_.size() > kHold
+                                      ? decoded_.size() - kHold : print_pos_;
+                    print_pos_ = safe;
+                    break;
+                }
+                print_pos_ = pos + 8; // len("</think>")
+                while (print_pos_ < decoded_.size() && decoded_[print_pos_] == '\n')
+                    ++print_pos_;
+                in_think_ = false;
+            }
+        }
+        return true;
+    }
+
+    EmitCb      emit_;
+    std::string decoded_;
+    size_t      print_pos_{0};
+    bool        in_think_{false};
+};
+
 static std::string generateId() {
     static std::mt19937_64 rng{std::random_device{}()};
     std::ostringstream ss;
@@ -199,7 +283,7 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
             } else {
                 choice = {
                     {"index",         0},
-                    {"message",       {{"role", "assistant"}, {"content", full_content}}},
+                    {"message",       {{"role", "assistant"}, {"content", stripThinkBlocks(full_content)}}},
                     {"finish_reason", "stop"}
                 };
             }
@@ -245,23 +329,29 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
                 std::string error_out;
                 NeuronsServiceImpl::HttpCompletionResult result;
 
+                ThinkStreamFilter think_filter{[&](const std::string& text) -> bool {
+                    if (!sink.is_writable()) return false;
+                    json chunk = {
+                        {"id", id}, {"object", "chat.completion.chunk"},
+                        {"created", unixSec()}, {"model", model},
+                        {"choices", json::array({{
+                            {"index", 0},
+                            {"delta", {{"content", text}}},
+                            {"finish_reason", nullptr}
+                        }})}
+                    };
+                    std::string cev = "data: " + chunk.dump() + "\n\n";
+                    return sink.write(cev.c_str(), cev.size());
+                }};
+
                 service_.generate_http_completion(
                     messages, tools_arr, params_proto, max_tokens,
                     [&](const std::string& delta) -> bool {
-                        if (!sink.is_writable()) return false;
-                        json chunk = {
-                            {"id", id}, {"object", "chat.completion.chunk"},
-                            {"created", unixSec()}, {"model", model},
-                            {"choices", json::array({{
-                                {"index", 0},
-                                {"delta", {{"content", delta}}},
-                                {"finish_reason", nullptr}
-                            }})}
-                        };
-                        std::string cev = "data: " + chunk.dump() + "\n\n";
-                        return sink.write(cev.c_str(), cev.size());
+                        return think_filter(delta);
                     },
                     result, error_out);
+
+                think_filter.finalize();
 
                 // Final chunk — tool call or stop
                 json final_chunk;
@@ -364,7 +454,7 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
             {"model",   model},
             {"choices", json::array({{
                 {"index",         0},
-                {"message",       {{"role", "assistant"}, {"content", full_content}}},
+                {"message",       {{"role", "assistant"}, {"content", stripThinkBlocks(full_content)}}},
                 {"finish_reason", "stop"}
             }})},
             {"usage", {{"prompt_tokens", 0}, {"completion_tokens", 0}, {"total_tokens", 0}}}
@@ -396,21 +486,27 @@ void OpenAiHttpServer::handleChatCompletions(const httplib::Request& req, httpli
             std::string ev = "data: " + first.dump() + "\n\n";
             if (!sink.write(ev.c_str(), ev.size())) { cancelled = true; return false; }
 
+            ThinkStreamFilter think_filter{[&](const std::string& text) -> bool {
+                if (!sink.is_writable()) { cancelled = true; return false; }
+                json chunk = {
+                    {"id", id}, {"object", "chat.completion.chunk"},
+                    {"created", unixSec()}, {"model", model},
+                    {"choices", json::array({{
+                        {"index", 0},
+                        {"delta", {{"content", text}}},
+                        {"finish_reason", nullptr}
+                    }})}
+                };
+                std::string cev = "data: " + chunk.dump() + "\n\n";
+                return sink.write(cev.c_str(), cev.size());
+            }};
+
             service_.generate_internal(greq, cancelled,
                 [&](const std::string& tok) -> bool {
-                    if (!sink.is_writable()) { cancelled = true; return false; }
-                    json chunk = {
-                        {"id", id}, {"object", "chat.completion.chunk"},
-                        {"created", unixSec()}, {"model", model},
-                        {"choices", json::array({{
-                            {"index", 0},
-                            {"delta", {{"content", tok}}},
-                            {"finish_reason", nullptr}
-                        }})}
-                    };
-                    std::string cev = "data: " + chunk.dump() + "\n\n";
-                    return sink.write(cev.c_str(), cev.size());
+                    return think_filter(tok);
                 }, error_out);
+
+            think_filter.finalize();
 
             json stop_chunk = {
                 {"id", id}, {"object", "chat.completion.chunk"},
