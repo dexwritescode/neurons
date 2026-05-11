@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <nlohmann/json.hpp>
+#include "compute/model/chat_template.h"
 
 #include <atomic>
 #include <filesystem>
@@ -411,10 +412,8 @@ TEST(ToolRunnerLiveTest, Qwen3_GeneratesToolCallAndContinues) {
     const std::string user_msg   =
         "Read the file at " + secret.string() + " and tell me what it contains.";
 
-    std::vector<std::pair<std::string, std::string>> msgs = {
-        {"system", sys_prompt}, {"user", user_msg}};
-    const std::string chat_text = model->tokenizer().apply_chat_template(
-        msgs, /*add_generation_prompt=*/true);
+    const std::string chat_text = compute::apply_chat_template(
+        model->tokenizer(), sys_prompt, {{"user", user_msg}});
     const auto token_ids = model->tokenizer().encode(
         chat_text, /*add_special_tokens=*/false);
 

@@ -31,6 +31,11 @@ int run(uint16_t grpc_port, int http_port, const std::string& model_path) {
 
     NeuronsServiceImpl service(models_dir, nullptr);
 
+    // Initialize MCP tool servers so the gRPC/GUI path can dispatch tool calls.
+    service.mcp_manager().load_config();
+    service.mcp_manager().load_permissions();
+    service.mcp_manager().connect_enabled();
+
     grpc::ServerBuilder builder;
     const std::string address = "0.0.0.0:" + std::to_string(grpc_port);
     builder.AddListeningPort(address, grpc::InsecureServerCredentials());

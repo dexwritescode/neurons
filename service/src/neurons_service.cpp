@@ -233,10 +233,7 @@ std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
                                               const neurons::GenerateRequest& req,
                                               int token_budget,
                                               const std::string& tool_system) const {
-    const std::string& type  = mdl.model_type();
-    const auto&        tok   = mdl.tokenizer();
-    const bool is_llama3     = (type == "llama") &&
-        (tok.find_token_id("<|start_header_id|>") != -1);
+    const auto& tok   = mdl.tokenizer();
     std::string system = "You are a helpful assistant.";
     if (!tool_system.empty())
         system += "\n\n" + tool_system;
@@ -259,13 +256,13 @@ std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
     pair_strings.reserve(pairs.size());
     for (const auto& p : pairs) {
         pair_strings.push_back(compute::apply_chat_template(
-            type, is_llama3, "",
+            tok, "",
             {{"user", p.user}, {"assistant", p.assistant}}));
     }
 
     // Fixed cost: system block + current user turn.
     const std::string fixed = compute::apply_chat_template(
-        type, is_llama3, system, {{"user", req.prompt()}});
+        tok, system, {{"user", req.prompt()}});
 
     int start;
     if (token_budget > 0) {
@@ -289,7 +286,7 @@ std::string NeuronsServiceImpl::build_prompt(const compute::LanguageModel& mdl,
         messages.push_back({"assistant", pairs[i].assistant});
     }
     messages.push_back({"user", req.prompt()});
-    return compute::apply_chat_template(type, is_llama3, system, messages);
+    return compute::apply_chat_template(tok, system, messages);
 }
 
 grpc::Status NeuronsServiceImpl::Generate(grpc::ServerContext* ctx,
@@ -695,8 +692,6 @@ bool NeuronsServiceImpl::generate_http_completion(
 
     const std::string model_type = mdl->model_type();
     const auto& tok = mdl->tokenizer();
-    const bool is_llama3 = (model_type == "llama") &&
-        (tok.find_token_id("<|start_header_id|>") != -1);
 
     // ── System prompt ─────────────────────────────────────────────────────────
     std::string system_prompt;
@@ -773,7 +768,7 @@ bool NeuronsServiceImpl::generate_http_completion(
 
     // ── Encode prompt ─────────────────────────────────────────────────────────
     const std::string prompt =
-        compute::apply_chat_template(model_type, is_llama3, system_prompt, chat_msgs);
+        compute::apply_chat_template(tok, system_prompt, chat_msgs);
 
     const int n_max = [&]() -> int {
         if (max_tokens > 0)

@@ -542,40 +542,6 @@ std::string SimpleBpeTokenizer::decode(const std::vector<int>& token_ids, bool s
     return result.str();
 }
 
-std::string SimpleBpeTokenizer::apply_chat_template(
-    const std::vector<std::pair<std::string, std::string>>& messages,
-    bool add_generation_prompt) const {
-
-    std::ostringstream result;
-
-    // ChatML format: used by Qwen2, Qwen3, and any model whose chat_template
-    // references <|im_start|>/<|im_end|> control tokens.
-    if (config_.chat_template.find("<|im_start|>") != std::string::npos) {
-        for (const auto& [role, content] : messages) {
-            result << "<|im_start|>" << role << "\n" << content << "<|im_end|>\n";
-        }
-        if (add_generation_prompt) {
-            result << "<|im_start|>assistant\n";
-        }
-        return result.str();
-    }
-
-    // Fallback: TinyLlama / Zephyr-style tags
-    for (const auto& [role, content] : messages) {
-        if (role == "user") {
-            result << "<|user|>\n" << content << "\n";
-        } else if (role == "assistant") {
-            result << "<|assistant|>\n" << content << "\n";
-        } else if (role == "system") {
-            result << "<|system|>\n" << content << "\n";
-        }
-    }
-    if (add_generation_prompt) {
-        result << "<|assistant|>\n";
-    }
-    return result.str();
-}
-
 // BPE Algorithm helper methods
 void SimpleBpeTokenizer::apply_merge(std::vector<Symbol>& symbols, const Merge& merge) const {
     // Merge left and right symbols into left position

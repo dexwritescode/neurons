@@ -21,7 +21,6 @@ namespace compute {
  * - Implements core BPE algorithm with priority queue
  * - Simple whitespace-based pre-tokenization (LLAMA_VOCAB_PRE_TYPE_DEFAULT)
  * - Special token handling (BOS/EOS/UNK/PAD)
- * - Chat template support via TokenizerConfig
  * - Pure C++ implementation for fast inference
  */
 class SimpleBpeTokenizer {
@@ -48,16 +47,6 @@ public:
      * @return Decoded text string
      */
     std::string decode(const std::vector<int>& token_ids, bool skip_special_tokens = true) const;
-
-    /**
-     * Apply chat template to conversation
-     * @param messages Vector of (role, content) pairs
-     * @param add_generation_prompt Whether to add generation prompt at end
-     * @return Formatted chat string ready for encoding
-     */
-    std::string apply_chat_template(
-        const std::vector<std::pair<std::string, std::string>>& messages,
-        bool add_generation_prompt = false) const;
 
     // ── ByteLevel (GPT-2 / Llama-3) static helpers ───────────────────────────
     // Exposed publicly so unit tests can verify table correctness without a model.

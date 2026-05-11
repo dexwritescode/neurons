@@ -118,10 +118,8 @@ int LoadCommand::run_inference(const std::string& model_path) {
     std::cout << " done (" << std::fixed << std::setprecision(1) << load_secs << "s)\n";
 
     const std::string model_type = inference->model_type();
-    const bool is_llama3 = (model_type == "llama") &&
-        (inference->tokenizer().find_token_id("<|start_header_id|>") != -1);
     const std::string formatted = compute::apply_chat_template(
-        model_type, is_llama3, "You are a helpful assistant.",
+        inference->tokenizer(), "You are a helpful assistant.",
         {{"user", prompt_}});
     std::cout << "Model type: " << model_type << "\n";
 
