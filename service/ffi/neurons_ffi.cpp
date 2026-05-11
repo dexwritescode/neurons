@@ -1,5 +1,6 @@
 #include "neurons_ffi.h"
 #include "neurons_service.h"
+#include "mcp/mcp_manager.h"
 #include "compute/core/compute_backend.h"
 
 #include <google/protobuf/util/json_util.h>
@@ -7,9 +8,12 @@
 
 #include <atomic>
 #include <cstring>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 // ── NeuronsCore ───────────────────────────────────────────────────────────────
 
@@ -18,6 +22,10 @@ struct NeuronsCore {
     std::unique_ptr<neurons_service::NeuronsServiceImpl> service;
     std::atomic<bool> cancel_generate{false};
     std::atomic<bool> cancel_download{false};
+    // Tool approval round-trip (used by neurons_generate_v2 / neurons_respond_tool_approval)
+    std::mutex approvals_mutex;
+    std::unordered_map<std::string, std::promise<bool>> pending_approvals;
+    std::atomic<uint64_t> next_approval_id{0};
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -53,6 +61,10 @@ NeuronsCore* neurons_create(const char* models_dir) {
     // Service is constructed without a backend; backend is set after init.
     h->service = std::make_unique<neurons_service::NeuronsServiceImpl>(
         h->models_dir, nullptr);
+    // Initialize MCP manager so tool_to_server_ is populated before first generate.
+    h->service->mcp_manager().load_config();
+    h->service->mcp_manager().load_permissions();
+    h->service->mcp_manager().connect_enabled();
     return h;
 }
 
@@ -291,6 +303,154 @@ void neurons_cancel_download(NeuronsCore* h) {
     if (!h) return;
     h->cancel_download.store(true, std::memory_order_relaxed);
     // Also signal through the HF client (handled inside download_internal callback).
+}
+
+// ── Tool-capable generation ───────────────────────────────────────────────────
+
+int neurons_generate_v2(NeuronsCore*   h,
+                        const char*    user_prompt,
+                        const char*    history_json,
+                        int            max_tokens,
+                        int            context_window,
+                        float          temperature,
+                        float          top_p,
+                        int            top_k,
+                        float          rep_penalty,
+                        int            tool_use_enabled,
+                        int            allow_shell_fallback,
+                        const char*    active_servers_json,
+                        NeuronsEventCb cb,
+                        void*          userdata,
+                        char* err, int  err_len,
+                        int*  prompt_tokens_out,
+                        int*  gen_tokens_out) {
+    if (!h || !user_prompt || !cb) { write_err("null argument", err, err_len); return -1; }
+
+    h->cancel_generate.store(false, std::memory_order_relaxed);
+
+    neurons::GenerateRequest req;
+    req.set_prompt(user_prompt);
+
+    if (history_json && *history_json) {
+        try {
+            auto arr = nlohmann::json::parse(history_json);
+            for (const auto& turn : arr) {
+                auto* msg = req.add_history();
+                msg->set_role(turn.value("role", ""));
+                msg->set_content(turn.value("content", ""));
+            }
+        } catch (const std::exception& e) {
+            write_err(std::string("history_json parse error: ") + e.what(), err, err_len);
+            return -1;
+        }
+    }
+
+    auto* p = req.mutable_params();
+    if (max_tokens > 0)     p->set_max_tokens(max_tokens);
+    if (context_window > 0) p->set_context_window(context_window);
+    if (temperature > 0)    p->set_temperature(temperature);
+    if (top_p > 0)          p->set_top_p(top_p);
+    if (top_k > 0)          p->set_top_k(top_k);
+    if (rep_penalty > 0)    p->set_rep_penalty(rep_penalty);
+
+    req.set_tool_use_enabled(tool_use_enabled != 0);
+    req.set_allow_shell_fallback(allow_shell_fallback != 0);
+
+    if (active_servers_json && *active_servers_json) {
+        try {
+            auto arr = nlohmann::json::parse(active_servers_json);
+            for (const auto& s : arr)
+                if (s.is_string()) req.add_active_mcp_servers(s.get<std::string>());
+        } catch (...) {}
+    }
+
+    // Approval callback: stash a promise keyed by approval_id, fire the event,
+    // return the future — blocks generate_internal until neurons_respond_tool_approval resolves it.
+    neurons_service::ApprovalCb approval_cb =
+        [h, cb, userdata](const neurons_service::ToolApprovalRequest& areq) -> std::future<bool> {
+        std::promise<bool> promise;
+        auto future = promise.get_future();
+        const std::string id = !areq.approval_id.empty()
+            ? areq.approval_id
+            : std::to_string(h->next_approval_id.fetch_add(1));
+        {
+            std::lock_guard lock(h->approvals_mutex);
+            h->pending_approvals[id] = std::move(promise);
+        }
+        const std::string payload = nlohmann::json{
+            {"approval_id", id},
+            {"server",      areq.server},
+            {"tool",        areq.tool},
+            {"args_json",   areq.args_json},
+            {"description", areq.description},
+            {"destructive", areq.destructive},
+        }.dump();
+        cb(NEURONS_EVENT_APPROVAL_REQUEST, payload.c_str(), userdata);
+        return future;
+    };
+
+    // Tool hook: forward pre/post-call events to Dart via the event callback.
+    neurons_service::ToolHook hook;
+    hook.pre_call = [cb, userdata](const std::string& server,
+                                    const std::string& tool,
+                                    std::string& args_json) -> bool {
+        const std::string payload = nlohmann::json{
+            {"server",    server},
+            {"tool",      tool},
+            {"args_json", args_json},
+        }.dump();
+        cb(NEURONS_EVENT_TOOL_CALL, payload.c_str(), userdata);
+        return true;
+    };
+    hook.post_call = [cb, userdata](const std::string& server,
+                                     const std::string& tool,
+                                     const std::string& /*args_json*/,
+                                     std::string& result_json) {
+        const bool is_error = result_json.find("\"error\"") != std::string::npos;
+        const std::string payload = nlohmann::json{
+            {"server",      server},
+            {"tool",        tool},
+            {"result_json", result_json},
+            {"error",       is_error},
+        }.dump();
+        cb(NEURONS_EVENT_TOOL_RESULT, payload.c_str(), userdata);
+    };
+
+    const uint64_t hook_id = h->service->mcp_manager().add_tool_hook(hook);
+
+    std::string error;
+    uint32_t pt = 0, gt = 0;
+    const bool ok = h->service->generate_internal(
+        req, h->cancel_generate,
+        [cb, userdata](const std::string& token) -> bool {
+            return cb(NEURONS_EVENT_TOKEN, token.c_str(), userdata) == 0;
+        },
+        error, &pt, &gt, nullptr, approval_cb);
+
+    h->service->mcp_manager().remove_tool_hook(hook_id);
+
+    // Deny any approvals still pending (generation ended or was cancelled).
+    {
+        std::lock_guard lock(h->approvals_mutex);
+        for (auto& [id, promise] : h->pending_approvals)
+            promise.set_value(false);
+        h->pending_approvals.clear();
+    }
+
+    if (prompt_tokens_out) *prompt_tokens_out = static_cast<int>(pt);
+    if (gen_tokens_out)    *gen_tokens_out    = static_cast<int>(gt);
+
+    if (!ok && !error.empty()) { write_err(error, err, err_len); return -1; }
+    return 0;
+}
+
+void neurons_respond_tool_approval(NeuronsCore* h, const char* approval_id, int approved) {
+    if (!h || !approval_id) return;
+    std::lock_guard lock(h->approvals_mutex);
+    auto it = h->pending_approvals.find(approval_id);
+    if (it == h->pending_approvals.end()) return;
+    it->second.set_value(approved != 0);
+    h->pending_approvals.erase(it);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

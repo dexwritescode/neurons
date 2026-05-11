@@ -91,6 +91,54 @@ typedef _NeuronsFreeStringDart = void Function(Pointer<Char> s);
 typedef _NeuronsTokenCbNative = Int32 Function(
     Pointer<Char> token, Pointer<Void> userdata);
 
+// Event callback: int (*)(NeuronsEventType type, const char* payload, void* userdata)
+typedef _NeuronsEventCbNative = Int32 Function(
+    Int32 type, Pointer<Char> payload, Pointer<Void> userdata);
+
+typedef _NeuronsGenerateV2Native = Int32 Function(
+    Pointer<NeuronsCoreOpaque> h,
+    Pointer<Char> userPrompt,
+    Pointer<Char> historyJson,
+    Int32 maxTokens,
+    Int32 contextWindow,
+    Float temperature,
+    Float topP,
+    Int32 topK,
+    Float repPenalty,
+    Int32 toolUseEnabled,
+    Int32 allowShellFallback,
+    Pointer<Char> activeServersJson,
+    Pointer<NativeFunction<_NeuronsEventCbNative>> cb,
+    Pointer<Void> userdata,
+    Pointer<Char> err,
+    Int32 errLen,
+    Pointer<Int32> promptTokensOut,
+    Pointer<Int32> genTokensOut);
+typedef _NeuronsGenerateV2Dart = int Function(
+    Pointer<NeuronsCoreOpaque> h,
+    Pointer<Char> userPrompt,
+    Pointer<Char> historyJson,
+    int maxTokens,
+    int contextWindow,
+    double temperature,
+    double topP,
+    int topK,
+    double repPenalty,
+    int toolUseEnabled,
+    int allowShellFallback,
+    Pointer<Char> activeServersJson,
+    Pointer<NativeFunction<_NeuronsEventCbNative>> cb,
+    Pointer<Void> userdata,
+    Pointer<Char> err,
+    int errLen,
+    Pointer<Int32> promptTokensOut,
+    Pointer<Int32> genTokensOut);
+
+typedef _NeuronsRespondApprovalNative = Void Function(
+    Pointer<NeuronsCoreOpaque> h, Pointer<Char> approvalId, Int32 approved);
+typedef _NeuronsRespondApprovalDart = void Function(
+    Pointer<NeuronsCoreOpaque> h, Pointer<Char> approvalId, int approved);
+
 typedef _NeuronsGenerateNative = Int32 Function(
     Pointer<NeuronsCoreOpaque> h,
     Pointer<Char> userPrompt,
@@ -191,6 +239,9 @@ class _GenArgs {
     required this.topK,
     required this.repPenalty,
     required this.sendPort,
+    this.toolUseEnabled = false,
+    this.allowShellFallback = false,
+    this.activeServersJson = '',
   });
   final String libPath;
   final int coreAddr;
@@ -203,6 +254,9 @@ class _GenArgs {
   final int topK;
   final double repPenalty;
   final SendPort sendPort;
+  final bool toolUseEnabled;
+  final bool allowShellFallback;
+  final String activeServersJson;
 }
 
 class _DownloadArgs {
@@ -228,6 +282,29 @@ SendPort? _downloadSendPort;
 int _tokenCb(Pointer<Char> token, Pointer<Void> userdata) {
   _genSendPort?.send(token.cast<Utf8>().toDartString());
   return 0; // 0 = continue
+}
+
+// Event type constants matching NeuronsEventType in neurons_ffi.h
+const int _evToken           = 0;
+const int _evToolCall        = 1;
+const int _evToolResult      = 2;
+const int _evApprovalRequest = 3;
+
+// C event callback — called from within neurons_generate_v2 on the isolate thread.
+@pragma('vm:entry-point')
+int _eventCb(int type, Pointer<Char> payload, Pointer<Void> userdata) {
+  final s = payload.cast<Utf8>().toDartString();
+  switch (type) {
+    case _evToken:
+      _genSendPort?.send(s);
+    case _evToolCall:
+      _genSendPort?.send({'toolCall': s});
+    case _evToolResult:
+      _genSendPort?.send({'toolResult': s});
+    case _evApprovalRequest:
+      _genSendPort?.send({'approvalRequest': s});
+  }
+  return 0;
 }
 
 // C download callback — called periodically during neurons_download_model.
@@ -275,6 +352,63 @@ void _generateIsolate(_GenArgs args) {
       args.topP,
       args.topK,
       args.repPenalty,
+      cb.nativeFunction,
+      nullptr,
+      errBuf,
+      512,
+      promptTokensPtr,
+      genTokensPtr,
+    );
+
+    final errStr = errBuf.cast<Utf8>().toDartString();
+    if (errStr.isNotEmpty) {
+      args.sendPort.send({'error': errStr});
+    } else {
+      args.sendPort.send({
+        'promptTokens': promptTokensPtr.value,
+        'genTokens': genTokensPtr.value,
+      });
+    }
+  });
+
+  cb.close();
+  args.sendPort.send(null); // signal done
+}
+
+void _generateIsolateV2(_GenArgs args) {
+  final lib = DynamicLibrary.open(args.libPath);
+  final generateFn = lib.lookupFunction<_NeuronsGenerateV2Native, _NeuronsGenerateV2Dart>(
+      'neurons_generate_v2');
+
+  final core = Pointer<NeuronsCoreOpaque>.fromAddress(args.coreAddr);
+  _genSendPort = args.sendPort;
+
+  final cb = NativeCallable<_NeuronsEventCbNative>.isolateLocal(
+    _eventCb,
+    exceptionalReturn: 1,
+  );
+
+  using((arena) {
+    final promptPtr      = args.userPrompt.toNativeUtf8(allocator: arena).cast<Char>();
+    final histPtr        = args.historyJson.toNativeUtf8(allocator: arena).cast<Char>();
+    final serversPtr     = args.activeServersJson.toNativeUtf8(allocator: arena).cast<Char>();
+    final errBuf         = arena<Char>(512);
+    final promptTokensPtr = arena<Int32>()..value = 0;
+    final genTokensPtr    = arena<Int32>()..value = 0;
+
+    generateFn(
+      core,
+      promptPtr,
+      histPtr,
+      args.maxTokens,
+      args.contextWindow,
+      args.temperature,
+      args.topP,
+      args.topK,
+      args.repPenalty,
+      args.toolUseEnabled ? 1 : 0,
+      args.allowShellFallback ? 1 : 0,
+      serversPtr,
       cb.nativeFunction,
       nullptr,
       errBuf,
@@ -532,24 +666,56 @@ class FfiNeuronsClient implements NeuronsClient {
           ..done = true
           ..promptTokens = msg['promptTokens'] as int
           ..genTokens = msg['genTokens'] as int);
+      } else if (msg is Map && msg['toolCall'] != null) {
+        final m = json.decode(msg['toolCall'] as String) as Map<String, dynamic>;
+        ctrl.add(GenerateResponse()
+          ..toolCall = (ToolCallEvent()
+            ..server = m['server'] as String? ?? ''
+            ..tool = m['tool'] as String? ?? ''
+            ..argsJson = m['args_json'] as String? ?? ''));
+      } else if (msg is Map && msg['toolResult'] != null) {
+        final m = json.decode(msg['toolResult'] as String) as Map<String, dynamic>;
+        ctrl.add(GenerateResponse()
+          ..toolResult = (ToolResultEvent()
+            ..server = m['server'] as String? ?? ''
+            ..tool = m['tool'] as String? ?? ''
+            ..resultJson = m['result_json'] as String? ?? ''
+            ..error = m['error'] as bool? ?? false));
+      } else if (msg is Map && msg['approvalRequest'] != null) {
+        final m = json.decode(msg['approvalRequest'] as String) as Map<String, dynamic>;
+        ctrl.add(GenerateResponse()
+          ..approvalRequest = (ToolApprovalRequest()
+            ..approvalId = m['approval_id'] as String? ?? ''
+            ..server = m['server'] as String? ?? ''
+            ..tool = m['tool'] as String? ?? ''
+            ..argsJson = m['args_json'] as String? ?? ''
+            ..description = m['description'] as String? ?? ''
+            ..destructive = m['destructive'] as bool? ?? false));
       }
     });
 
+    final args = _GenArgs(
+      libPath: _libPath,
+      coreAddr: _core.address,
+      userPrompt: prompt,
+      historyJson: historyJson,
+      maxTokens: params?.maxTokens.toInt() ?? 200,
+      contextWindow: params?.contextWindow.toInt() ?? 0,
+      temperature: params?.temperature ?? 0.7,
+      topP: params?.topP ?? 0.9,
+      topK: params?.topK.toInt() ?? 40,
+      repPenalty: params?.repPenalty ?? 1.1,
+      sendPort: port.sendPort,
+      toolUseEnabled: toolUseEnabled,
+      allowShellFallback: allowShellFallback,
+      activeServersJson: activeMcpServers.isNotEmpty
+          ? json.encode(activeMcpServers)
+          : '',
+    );
+
     Isolate.spawn(
-      _generateIsolate,
-      _GenArgs(
-        libPath: _libPath,
-        coreAddr: _core.address,
-        userPrompt: prompt,
-        historyJson: historyJson,
-        maxTokens: params?.maxTokens.toInt() ?? 200,
-        contextWindow: params?.contextWindow.toInt() ?? 0,
-        temperature: params?.temperature ?? 0.7,
-        topP: params?.topP ?? 0.9,
-        topK: params?.topK.toInt() ?? 40,
-        repPenalty: params?.repPenalty ?? 1.1,
-        sendPort: port.sendPort,
-      ),
+      toolUseEnabled ? _generateIsolateV2 : _generateIsolate,
+      args,
     );  // background isolate; cancelled via neurons_cancel()
 
     return ctrl.stream;
@@ -719,8 +885,14 @@ class FfiNeuronsClient implements NeuronsClient {
     String approvalId,
     bool approved, {
     String newPermission = '',
-  }) =>
-      throw UnimplementedError('respondToolApproval not supported over FFI');
+  }) async {
+    final respondFn = _lib.lookupFunction<_NeuronsRespondApprovalNative,
+        _NeuronsRespondApprovalDart>('neurons_respond_tool_approval');
+    final idPtr = approvalId.toNativeUtf8().cast<Char>();
+    respondFn(_core, idPtr, approved ? 1 : 0);
+    calloc.free(idPtr);
+    return ToolApprovalResult()..success = approved;
+  }
 
   // ── MCP server management ──────────────────────────────────────────────────
 
