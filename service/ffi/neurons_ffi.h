@@ -83,9 +83,59 @@ int  neurons_generate(NeuronsCore*   h,
                       int*  prompt_tokens_out,
                       int*  gen_tokens_out);
 
-/// Signal a running neurons_generate() to stop after the current token.
+/// Signal a running neurons_generate() or neurons_generate_v2() to stop.
 /// Safe to call from any thread.
 void neurons_cancel(NeuronsCore* h);
+
+// ── Tool-capable generation ───────────────────────────────────────────────────
+
+/// Event types emitted by neurons_generate_v2().
+typedef enum {
+    NEURONS_EVENT_TOKEN            = 0, // payload: raw token string
+    NEURONS_EVENT_TOOL_CALL        = 1, // payload: {"server":"…","tool":"…","args_json":"…"}
+    NEURONS_EVENT_TOOL_RESULT      = 2, // payload: {"server":"…","tool":"…","result_json":"…","error":false}
+    NEURONS_EVENT_APPROVAL_REQUEST = 3, // payload: {"approval_id":"…","server":"…","tool":"…","args_json":"…","description":"…","destructive":false}
+} NeuronsEventType;
+
+/// Structured event callback used by neurons_generate_v2().
+/// Called from the generation thread for every token and tool event.
+/// Return 0 to continue, non-zero to cancel.
+typedef int (*NeuronsEventCb)(NeuronsEventType type, const char* payload, void* userdata);
+
+/// Tool-capable generation. Same semantics as neurons_generate() plus:
+///   tool_use_enabled     — 1 to allow tool calls, 0 to disable.
+///   allow_shell_fallback — 1 to route unknown tools through neurons-shell run_command.
+///   active_servers_json  — JSON array of server names to restrict tool use to,
+///                          or NULL/empty to allow all configured servers.
+/// The callback receives TOKEN events for text and structured events for tool
+/// activity. Approval requests are surfaced as APPROVAL_REQUEST events; respond
+/// by calling neurons_respond_tool_approval() from any thread while this call
+/// is blocking.
+/// Must be called from a background thread — never from the main/UI thread.
+int neurons_generate_v2(NeuronsCore*    h,
+                        const char*     user_prompt,
+                        const char*     history_json,
+                        int             max_tokens,
+                        int             context_window,
+                        float           temperature,
+                        float           top_p,
+                        int             top_k,
+                        float           rep_penalty,
+                        int             tool_use_enabled,
+                        int             allow_shell_fallback,
+                        const char*     active_servers_json,
+                        NeuronsEventCb  cb,
+                        void*           userdata,
+                        char* err, int  err_len,
+                        int*  prompt_tokens_out,
+                        int*  gen_tokens_out);
+
+/// Resolve a pending tool approval request. Safe to call from any thread
+/// (including the main/UI thread) while neurons_generate_v2() is running.
+/// approved: 1 = approved, 0 = denied.
+void neurons_respond_tool_approval(NeuronsCore* h,
+                                   const char*  approval_id,
+                                   int          approved);
 
 // ── Model browser / download ─────────────────────────────────────────────────
 
