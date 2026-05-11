@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "compute/model/simple_bpe_tokenizer.h"
+#include "compute/model/chat_template.h"
 #include "test_config.h"
 #include <filesystem>
 
@@ -153,13 +154,14 @@ TEST_F(SimpleBpeTokenizerTest, ChatTemplate) {
 
     const auto& tokenizer = *result;
 
-    // Test chat template
-    std::vector<std::pair<std::string, std::string>> conversation = {
+    // Test chat template via the top-level apply_chat_template
+    std::vector<compute::ChatMessage> conversation = {
         {"user", "Hello, how are you?"},
         {"assistant", "I'm doing well, thank you!"}
     };
 
-    auto formatted = tokenizer.apply_chat_template(conversation, false);
+    auto formatted = compute::apply_chat_template(tokenizer, "", conversation,
+                                                  /*add_generation_prompt=*/false);
     EXPECT_FALSE(formatted.empty()) << "Chat template should produce formatted text";
 
     std::cout << "Chat template test:" << std::endl;

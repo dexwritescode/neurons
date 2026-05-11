@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "base_command.h"
+#include "compute/model/simple_bpe_tokenizer.h"
 #include "remote_node_runner.h"
 #include "cli/utils/tool_policy.h"
 #include "models/registry/model_registry.h"
@@ -42,10 +43,9 @@ private:
     std::unique_ptr<models::registry::ModelRegistry> model_registry_;
 
     int run_repl(const std::string& model_path, ToolPolicy policy);
-    std::string buildPrompt(const std::string& model_type,
-                            const std::vector<Turn>& history,
-                            const std::string& user_input,
-                            bool has_llama3_tokens) const;
+    std::string buildPrompt(const compute::SimpleBpeTokenizer& tokenizer,
+                            const std::vector<Turn>&           history,
+                            const std::string&                 user_input) const;
     void printHelp() const;
 };
 

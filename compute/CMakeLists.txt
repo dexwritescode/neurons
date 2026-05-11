@@ -48,6 +48,44 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     endif()
 endif()
 
+# ── nlohmann_json ─────────────────────────────────────────────────────────────
+# On Apple/arm64 provided transitively by MLX; fetch it on other platforms.
+if(NOT NLOHMANN_JSON_TARGET)
+    if(TARGET nlohmann_json::nlohmann_json)
+        set(NLOHMANN_JSON_TARGET nlohmann_json::nlohmann_json)
+    elseif(TARGET nlohmann_json)
+        set(NLOHMANN_JSON_TARGET nlohmann_json)
+    else()
+        FetchContent_Declare(
+            nlohmann_json
+            GIT_REPOSITORY https://github.com/nlohmann/json.git
+            GIT_TAG        v3.11.3
+        )
+        set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(nlohmann_json)
+        set(NLOHMANN_JSON_TARGET nlohmann_json::nlohmann_json)
+    endif()
+endif()
+
+# ── minja (MIT-licensed Jinja2 subset for chat template rendering) ─────────────
+# Use FetchContent_Populate (not MakeAvailable) to avoid running minja's own
+# CMakeLists, which executes a Python script to download test data.  We only
+# need the header files; we create the INTERFACE target ourselves.
+FetchContent_Declare(
+    minja
+    GIT_REPOSITORY https://github.com/google/minja.git
+    GIT_TAG        main
+)
+FetchContent_GetProperties(minja)
+if(NOT minja_POPULATED)
+    FetchContent_Populate(minja)
+    add_library(minja INTERFACE)
+    target_include_directories(minja INTERFACE ${minja_SOURCE_DIR}/include)
+    if(NLOHMANN_JSON_TARGET)
+        target_link_libraries(minja INTERFACE ${NLOHMANN_JSON_TARGET})
+    endif()
+endif()
+
 # ── Library ───────────────────────────────────────────────────────────────────
 add_library(compute_backend
     src/compute/core/compute_backend.cpp
@@ -78,6 +116,10 @@ endif()
 
 if(NLOHMANN_JSON_TARGET)
     target_link_libraries(compute_backend PUBLIC ${NLOHMANN_JSON_TARGET})
+endif()
+
+if(TARGET minja)
+    target_link_libraries(compute_backend PUBLIC minja)
 endif()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

@@ -117,17 +117,15 @@ int ChatCommand::execute() {
     return run_repl(location.modelPath, policy);
 }
 
-std::string ChatCommand::buildPrompt(const std::string& model_type,
+std::string ChatCommand::buildPrompt(const compute::SimpleBpeTokenizer& tokenizer,
                                      const std::vector<Turn>& history,
-                                     const std::string& user_input,
-                                     bool has_llama3_tokens) const {
+                                     const std::string& user_input) const {
     std::vector<compute::ChatMessage> messages;
     messages.reserve(history.size() + 1);
     for (const auto& t : history)
         messages.push_back({t.role, t.content});
     messages.push_back({"user", user_input});
-    return compute::apply_chat_template(
-        model_type, has_llama3_tokens, system_prompt_, messages);
+    return compute::apply_chat_template(tokenizer, system_prompt_, messages);
 }
 
 void ChatCommand::printHelp() const {
@@ -166,9 +164,6 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
     std::cout << " done (" << std::fixed << std::setprecision(1) << load_secs << "s)\n";
 
     const std::string model_type = inference->model_type();
-    const bool has_llama3_tokens = (model_type == "llama") &&
-        (inference->tokenizer().find_token_id("<|start_header_id|>") != -1);
-
     std::cout << "Model: " << model_type << " | Type /help for commands\n";
 
     // ── Tool-use setup ────────────────────────────────────────────────────────
@@ -248,7 +243,7 @@ int ChatCommand::run_repl(const std::string& model_path, ToolPolicy policy) {
             continue;
         }
 
-        std::string prompt = buildPrompt(model_type, history, line, has_llama3_tokens);
+        std::string prompt = buildPrompt(inference->tokenizer(), history, line);
         auto token_ids = inference->tokenizer().encode(prompt, /*add_special_tokens=*/true);
 
         std::cout << "Assistant: " << std::flush;
