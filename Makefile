@@ -91,6 +91,9 @@ test-debug: ## Build + run all unit tests in Debug mode (mirrors CI exactly)
 flutter-test: ## Run Flutter widget + unit tests
 	cd $(GUI_DIR) && flutter test
 
+.PHONY: test-all
+test-all: test-debug flutter-test ## Run ALL tests (Debug C++ + Flutter) — mandatory gate before gh pr create
+
 # ── Code generation ──────────────────────────────────────────────────────────
 
 .PHONY: proto

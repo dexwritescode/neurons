@@ -104,6 +104,7 @@ add_library(neurons_service_lib STATIC
     src/service_runner.cpp
     src/mcp/mcp_client.cpp
     src/mcp/mcp_manager.cpp
+    src/mcp/builtin_filesystem.cpp
     src/mcp/builtin_shell.cpp
 )
 

@@ -41,7 +41,7 @@ public:
 
     const ModelConfig&        config()     const override { return config_; }
     const std::string&        model_type() const override { return config_.model_type; }
-    const SimpleBpeTokenizer& tokenizer()  const override { return tokenizer_; }
+    const HFTokenizer& tokenizer()  const override { return tokenizer_; }
     size_t                    num_parameters() const override;
 
 private:
@@ -55,7 +55,7 @@ private:
 
     GemmaModelMLX(
         ModelConfig                                        config,
-        SimpleBpeTokenizer                                 tokenizer,
+        HFTokenizer                                 tokenizer,
         std::unordered_map<std::string, mlx::core::array> mlx_weights,
         mlx::core::array                                   embed_mat);
 
@@ -74,7 +74,7 @@ private:
         std::function<bool(int)> on_token);
 
     ModelConfig                                        config_;
-    SimpleBpeTokenizer                                 tokenizer_;
+    HFTokenizer                                 tokenizer_;
     std::unordered_map<std::string, mlx::core::array> mlx_weights_;
     mlx::core::array                                   embed_mat_;
     std::optional<MlxDecodeState>                      mlx_state_;

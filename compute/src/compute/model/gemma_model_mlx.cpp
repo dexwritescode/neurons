@@ -64,7 +64,7 @@ Result<GemmaModelMLX> GemmaModelMLX::from_model_dir(
         }
     }
 
-    auto tok_result = SimpleBpeTokenizer::from_model_dir(model_dir);
+    auto tok_result = HFTokenizer::from_model_dir(model_dir);
     if (!tok_result) return std::unexpected(tok_result.error());
 
     // Dequantize embedding eagerly so mx::compile treats it as a constant.
@@ -97,7 +97,7 @@ Result<GemmaModelMLX> GemmaModelMLX::from_model_dir(
 
 GemmaModelMLX::GemmaModelMLX(
     ModelConfig                                        config,
-    SimpleBpeTokenizer                                 tokenizer,
+    HFTokenizer                                 tokenizer,
     std::unordered_map<std::string, mx::array>         mlx_weights,
     mx::array                                          embed_mat)
     : config_(std::move(config))

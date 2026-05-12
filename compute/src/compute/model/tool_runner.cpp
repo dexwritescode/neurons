@@ -36,7 +36,7 @@ Result<ToolRunResult> ToolRunner::run(
                 decoded_so_far = new_decoded;
                 accumulated += delta;
 
-                if (can_detect) {
+                if (can_execute) {
                     auto tc = model.detect_tool_call(accumulated);
                     if (tc.has_value()) {
                         pending_tool = std::move(tc);

@@ -1,5 +1,5 @@
 #include "chat_template.h"
-#include "simple_bpe_tokenizer.h"
+#include "hf_tokenizer.h"
 
 #include <minja/minja.hpp>
 #include <nlohmann/json.hpp>
@@ -18,7 +18,7 @@ static nlohmann::ordered_json to_json(const std::vector<ChatMessage>& messages) 
 // Hardcoded family dispatch: used when chat_template is absent or rendering throws.
 // Family is detected from the tokenizer vocab rather than a model_type string.
 static std::string fallback(
-    const SimpleBpeTokenizer&       tok,
+    const HFTokenizer&       tok,
     const std::string&              system_prompt,
     const std::vector<ChatMessage>& messages)
 {
@@ -88,7 +88,7 @@ std::string render_chat_template(
 }
 
 std::string apply_chat_template(
-    const SimpleBpeTokenizer&       tok,
+    const HFTokenizer&       tok,
     const std::string&              system_prompt,
     const std::vector<ChatMessage>& messages,
     bool                            add_generation_prompt)

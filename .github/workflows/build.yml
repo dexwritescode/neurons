@@ -33,6 +33,14 @@ jobs:
       - name: Install gRPC + Protobuf
         run: brew install grpc
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: compute/tokenizers-sys
+
       - name: Cache CMake fetched dependencies
         uses: actions/cache@v4
         with:
@@ -71,6 +79,14 @@ jobs:
 
       - name: Install gRPC + Protobuf
         run: brew install grpc
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: compute/tokenizers-sys
 
       - name: Cache CMake fetched dependencies
         uses: actions/cache@v4

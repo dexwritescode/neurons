@@ -117,7 +117,7 @@ int ChatCommand::execute() {
     return run_repl(location.modelPath, policy);
 }
 
-std::string ChatCommand::buildPrompt(const compute::SimpleBpeTokenizer& tokenizer,
+std::string ChatCommand::buildPrompt(const compute::HFTokenizer& tokenizer,
                                      const std::vector<Turn>& history,
                                      const std::string& user_input) const {
     std::vector<compute::ChatMessage> messages;

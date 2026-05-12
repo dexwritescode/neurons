@@ -165,7 +165,7 @@ Result<Qwen3TransformerMoeModelMLX> Qwen3TransformerMoeModelMLX::from_model_dir(
 
     auto& [config, mlx_weights] = *result;
 
-    auto tok_result = SimpleBpeTokenizer::from_model_dir(model_dir);
+    auto tok_result = HFTokenizer::from_model_dir(model_dir);
     if (!tok_result) return std::unexpected(tok_result.error());
 
     // Dequantize embedding eagerly so mx::compile treats it as a constant.
@@ -199,7 +199,7 @@ Result<Qwen3TransformerMoeModelMLX> Qwen3TransformerMoeModelMLX::from_model_dir(
 
 Qwen3TransformerMoeModelMLX::Qwen3TransformerMoeModelMLX(
     ModelConfig                                        config,
-    SimpleBpeTokenizer                                 tokenizer,
+    HFTokenizer                                 tokenizer,
     std::unordered_map<std::string, mx::array>         mlx_weights,
     mx::array                                          embed_mat,
     size_t                                             context_size)

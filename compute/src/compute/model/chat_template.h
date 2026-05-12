@@ -5,7 +5,7 @@
 
 namespace compute {
 
-class SimpleBpeTokenizer;
+class HFTokenizer;
 
 struct ChatMessage {
     std::string role;     // "system", "user", "assistant"
@@ -28,7 +28,7 @@ std::string render_chat_template(
 // as a system message, and render via minja.
 // Falls back to hardcoded family dispatch if the template is absent or fails.
 std::string apply_chat_template(
-    const SimpleBpeTokenizer&       tokenizer,
+    const HFTokenizer&              tokenizer,
     const std::string&              system_prompt,
     const std::vector<ChatMessage>& messages,
     bool                            add_generation_prompt = true

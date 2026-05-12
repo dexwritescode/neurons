@@ -203,13 +203,13 @@ grpc::Status NeuronsServiceImpl::ListModels(grpc::ServerContext* /*ctx*/,
 // ── Generate ─────────────────────────────────────────────────────────────────
 
 // Helper: token-count a string using the model tokenizer (no special tokens).
-static int count_tokens(const compute::SimpleBpeTokenizer& tok, const std::string& text) {
+static int count_tokens(const compute::HFTokenizer& tok, const std::string& text) {
     return static_cast<int>(tok.encode(text, /*add_special_tokens=*/false).size());
 }
 
 // Trim `blocks` (oldest-first) so that their total token count fits within `budget`.
 // Returns the start index into `blocks` (inclusive) from which blocks should be included.
-static int trim_blocks_to_budget(const compute::SimpleBpeTokenizer& tok,
+static int trim_blocks_to_budget(const compute::HFTokenizer& tok,
                                   const std::vector<std::string>& blocks,
                                   int budget) {
     // Count tokens per block (once).

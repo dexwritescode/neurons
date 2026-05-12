@@ -34,7 +34,7 @@ public:
 
     const ModelConfig&        config()         const override { return config_; }
     const std::string&        model_type()     const override { return config_.model_type; }
-    const SimpleBpeTokenizer& tokenizer()      const override { return tokenizer_; }
+    const HFTokenizer& tokenizer()      const override { return tokenizer_; }
     size_t                    num_parameters() const override;
 
     // ── KV-cache step interface (public for diagnostic tests) ─────────────────
@@ -53,17 +53,17 @@ public:
 private:
     LlamaModel(
         ModelConfig        config,
-        SimpleBpeTokenizer tokenizer,
+        HFTokenizer tokenizer,
         ComputeBackend*    backend);
 
     // ── State ─────────────────────────────────────────────────────────────────
 
     enum class ToolFamily { None, Qwen25, Llama31, MistralTool };
-    static ToolFamily detect_tool_family(const SimpleBpeTokenizer& tok,
+    static ToolFamily detect_tool_family(const HFTokenizer& tok,
                                          const ModelConfig& cfg);
 
     ModelConfig        config_;
-    SimpleBpeTokenizer tokenizer_;
+    HFTokenizer tokenizer_;
     ComputeBackend*    backend_;
     ToolFamily         tool_family_ = ToolFamily::None;
 
