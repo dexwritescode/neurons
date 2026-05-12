@@ -75,10 +75,13 @@ grpc::Status NeuronsServiceImpl::LoadModel(grpc::ServerContext* /*ctx*/,
                                            neurons::LoadModelResponse* resp) {
     std::lock_guard<std::mutex> lock(model_mutex_);
 
-    const fs::path model_path(req->model_path());
+    // Resolve short names (e.g. "mlx-community/Qwen2.5-3B-Instruct-4bit") to
+    // full paths by prepending models_dir_.  fs::path::operator/= leaves an
+    // absolute path unchanged, so absolute paths still work as before.
+    const fs::path model_path = fs::path(models_dir_) / req->model_path();
     if (!fs::exists(model_path)) {
         resp->set_success(false);
-        resp->set_error("Model path does not exist: " + req->model_path());
+        resp->set_error("Model not found: " + req->model_path());
         return grpc::Status::OK;
     }
 

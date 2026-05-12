@@ -62,7 +62,7 @@ service NeuronsInference {
 // ── LoadModel ────────────────────────────────────────────────────────────────
 
 message LoadModelRequest {
-  string model_path = 1;  // Absolute path to the model directory
+  string model_path = 1;  // Absolute path or short name (e.g. "mlx-community/Qwen2.5-3B-Instruct-4bit")
 }
 
 message LoadModelResponse {
