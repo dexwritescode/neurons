@@ -74,9 +74,13 @@ protected:
 
 TEST_F(McpManagerBuiltinTest, BuiltinServerListed) {
     const auto servers = mgr_->list_servers();
-    ASSERT_GE(servers.size(), 1u);
-    EXPECT_EQ(servers[0].name, "neurons-shell");
-    EXPECT_TRUE(servers[0].builtin);
+    ASSERT_GE(servers.size(), 2u);
+    const auto has_server = [&](const std::string& name) {
+        return std::any_of(servers.begin(), servers.end(),
+            [&](const auto& s) { return s.name == name && s.builtin; });
+    };
+    EXPECT_TRUE(has_server("neurons-shell"));
+    EXPECT_TRUE(has_server("neurons-filesystem"));
 }
 
 TEST_F(McpManagerBuiltinTest, BuiltinToolsInListTools) {

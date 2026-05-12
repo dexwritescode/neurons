@@ -310,3 +310,69 @@ TEST_F(McpRpcTest, RespondToolApprovalUnknownIdReturnsError) {
     EXPECT_FALSE(resp.success());
     EXPECT_FALSE(resp.error().empty());
 }
+
+// ── LoadModel path resolution ─────────────────────────────────────────────────
+// Tests that short names and absolute paths are both resolved correctly.
+// No real model is loaded — we only test the path-resolution layer (the
+// "model not found" error proves the service looked in the right place).
+
+class LoadModelPathTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        models_dir_ = fs::temp_directory_path() / ("load_model_path_test_" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(models_dir_);
+        svc_ = std::make_unique<NeuronsServiceImpl>(models_dir_.string(), nullptr);
+    }
+
+    void TearDown() override {
+        svc_.reset();
+        fs::remove_all(models_dir_);
+    }
+
+    // Create a fake model directory under models_dir_ / relative_name.
+    // Doesn't need real model files — just needs to exist for fs::exists().
+    fs::path make_fake_model(const std::string& relative_name) {
+        const auto p = models_dir_ / relative_name;
+        fs::create_directories(p);
+        return p;
+    }
+
+    neurons::LoadModelResponse call_load(const std::string& model_arg) {
+        neurons::LoadModelRequest  req;
+        neurons::LoadModelResponse resp;
+        req.set_model_path(model_arg);
+        svc_->LoadModel(nullptr, &req, &resp);
+        return resp;
+    }
+
+    fs::path models_dir_;
+    std::unique_ptr<NeuronsServiceImpl> svc_;
+};
+
+// Short name resolves to models_dir_/<name> — directory exists, so we get
+// past the existence check (fails later because no backend, not "not found").
+TEST_F(LoadModelPathTest, ShortNameResolvesUnderModelsDir) {
+    make_fake_model("mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit");
+    const auto resp = call_load("mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit");
+    // Should NOT fail with "Model not found" — it found the directory.
+    EXPECT_FALSE(resp.error().find("not found") != std::string::npos)
+        << "Unexpected 'not found' error: " << resp.error();
+}
+
+// A short name that doesn't exist under models_dir_ returns "not found".
+TEST_F(LoadModelPathTest, ShortNameNotFoundReturnsError) {
+    const auto resp = call_load("mlx-community/does-not-exist");
+    EXPECT_FALSE(resp.success());
+    EXPECT_NE(resp.error().find("not found"), std::string::npos)
+        << "Expected 'not found' in error: " << resp.error();
+}
+
+// An absolute path bypasses models_dir_ entirely (fs::path::operator/= replaces
+// the base when the rhs is absolute).
+TEST_F(LoadModelPathTest, AbsolutePathResolvesDirectly) {
+    const auto abs_model = make_fake_model("abs-test/MyModel");
+    const auto resp = call_load(abs_model.string());
+    EXPECT_FALSE(resp.error().find("not found") != std::string::npos)
+        << "Unexpected 'not found' error: " << resp.error();
+}

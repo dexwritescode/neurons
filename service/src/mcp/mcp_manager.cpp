@@ -1,4 +1,5 @@
 #include "mcp_manager.h"
+#include "builtin_filesystem.h"
 #include "builtin_shell.h"
 
 #include <nlohmann/json.hpp>
@@ -41,7 +42,8 @@ void McpManager::register_builtins() {
     };
 
     const BuiltinDef defs[] = {
-        { "neurons-shell", BuiltinShell::handle, BuiltinShell::tool_defs },
+        { "neurons-filesystem", BuiltinFilesystem::handle, BuiltinFilesystem::tool_defs },
+        { "neurons-shell",      BuiltinShell::handle,      BuiltinShell::tool_defs      },
     };
 
     for (const auto& def : defs) {
@@ -69,7 +71,9 @@ void McpManager::register_builtins() {
         builtin_rules_.push_back(std::move(r));
     };
 
-    add_default("neurons-shell", "run_command", "always_ask");
+    add_default("neurons-filesystem", "read_file",  "always_allow");
+    add_default("neurons-filesystem", "write_file", "always_ask");
+    add_default("neurons-shell",      "run_command","always_ask");
 }
 
 // ── Paths ─────────────────────────────────────────────────────────────────────

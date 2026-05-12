@@ -2,6 +2,18 @@ cmake_minimum_required(VERSION 3.16)
 
 project(compute_backend VERSION 1.0.0 LANGUAGES CXX)
 
+# ── Rust / Corrosion ──────────────────────────────────────────────────────────
+# Corrosion drives cargo build from CMake; tokenizers_sys is the Rust staticlib
+# that wraps HuggingFace tokenizers 0.32.1.
+include(FetchContent)
+FetchContent_Declare(
+    Corrosion
+    GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
+    GIT_TAG        v0.5.1
+)
+FetchContent_MakeAvailable(Corrosion)
+corrosion_import_crate(MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/tokenizers-sys/Cargo.toml)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -92,7 +104,7 @@ add_library(compute_backend
     src/compute/model/model_config.cpp
     src/compute/model/model_loader.cpp
     src/compute/model/tokenizer_config.cpp
-    src/compute/model/simple_bpe_tokenizer.cpp
+    src/compute/model/hf_tokenizer.cpp
     src/compute/model/sampler.cpp
     src/compute/model/chat_template.cpp
     src/compute/model/language_model.cpp
@@ -105,8 +117,19 @@ target_include_directories(compute_backend
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
         $<INSTALL_INTERFACE:include>
-    PRIVATE src/compute/
+    PRIVATE
+        src/compute/
+        ${CMAKE_CURRENT_SOURCE_DIR}/tokenizers-sys
 )
+
+target_link_libraries(compute_backend PUBLIC tokenizers_sys)
+
+if(APPLE)
+    target_link_libraries(compute_backend PUBLIC
+        "-framework CoreFoundation"
+        "-framework Security"
+    )
+endif()
 
 if(MLX_AVAILABLE AND TARGET mlx)
     target_link_libraries(compute_backend PUBLIC mlx)
@@ -155,7 +178,6 @@ if(BUILD_TESTING)
         tests/compute/test_model_config.cpp
         tests/compute/test_model_loader.cpp
         tests/compute/test_tokenizer_config.cpp
-        tests/compute/test_simple_bpe_tokenizer.cpp
         tests/compute/test_forward_pass.cpp
         tests/compute/test_mistral_integration.cpp
         tests/compute/test_llama3_integration.cpp
@@ -187,26 +209,6 @@ if(BUILD_TESTING)
         target_link_libraries(compute_tests PRIVATE mlx)
         target_compile_definitions(compute_tests PRIVATE MLX_BACKEND_ENABLED)
     endif()
-
-    # Tokenizer comparison test — minimal standalone executable, does not link compute_backend
-    add_executable(test_tokenizer_comparison
-        tests/compute/test_tokenizer_comparison.cpp
-        src/compute/model/tokenizer_config.cpp
-        src/compute/model/simple_bpe_tokenizer.cpp
-    )
-
-    target_link_libraries(test_tokenizer_comparison PRIVATE
-        gtest_main
-        gmock
-    )
-
-    if(NLOHMANN_JSON_TARGET)
-        target_link_libraries(test_tokenizer_comparison PRIVATE ${NLOHMANN_JSON_TARGET})
-    endif()
-
-    target_include_directories(test_tokenizer_comparison PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
 
     include(CTest)
     include(GoogleTest)

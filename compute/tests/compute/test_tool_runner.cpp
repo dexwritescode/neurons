@@ -3,7 +3,7 @@
 
 #include "../../src/compute/model/tool_runner.h"
 #include "../../src/compute/model/language_model.h"
-#include "../../src/compute/model/simple_bpe_tokenizer.h"
+#include "../../src/compute/model/hf_tokenizer.h"
 #include "../../src/compute/model/model_config.h"
 
 #include <atomic>
@@ -29,7 +29,7 @@ public:
     static constexpr const char* kModelPath =
         "/Users/dex/.neurons/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0";
 
-    explicit StubLanguageModel(compute::SimpleBpeTokenizer tok)
+    explicit StubLanguageModel(compute::HFTokenizer tok)
         : tok_(std::move(tok)) {
         // Minimal ModelConfig — no EOS tokens so the stub generate() drives termination.
         config_.vocab_size            = 32000;
@@ -93,13 +93,13 @@ public:
         return " <<RESULT:" + name + ":" + result_json + ">>";
     }
 
-    const compute::SimpleBpeTokenizer& tokenizer()    const override { return tok_; }
+    const compute::HFTokenizer& tokenizer()    const override { return tok_; }
     const compute::ModelConfig&        config()        const override { return config_; }
     const std::string&                 model_type()   const override { return config_.model_type; }
     size_t                             num_parameters() const override { return 0; }
 
 private:
-    compute::SimpleBpeTokenizer    tok_;
+    compute::HFTokenizer    tok_;
     compute::ModelConfig           config_;
     std::vector<std::vector<int>>  turns_;
     int                            turn_ = 0;
@@ -115,12 +115,12 @@ protected:
             skip_reason_ = "TinyLlama not downloaded";
             return;
         }
-        auto tok = compute::SimpleBpeTokenizer::from_model_dir(path);
+        auto tok = compute::HFTokenizer::from_model_dir(path);
         if (!tok.has_value()) {
             skip_reason_ = "Failed to load tokenizer: " + tok.error().message;
             return;
         }
-        tok_ = std::make_unique<compute::SimpleBpeTokenizer>(std::move(*tok));
+        tok_ = std::make_unique<compute::HFTokenizer>(std::move(*tok));
     }
 
     static void TearDownTestSuite() { tok_.reset(); }
@@ -130,16 +130,16 @@ protected:
     }
 
     std::unique_ptr<StubLanguageModel> make_model() {
-        auto tok = compute::SimpleBpeTokenizer::from_model_dir(
+        auto tok = compute::HFTokenizer::from_model_dir(
             std::filesystem::path{StubLanguageModel::kModelPath});
         return std::make_unique<StubLanguageModel>(std::move(*tok));
     }
 
-    static std::unique_ptr<compute::SimpleBpeTokenizer> tok_;
+    static std::unique_ptr<compute::HFTokenizer> tok_;
     static std::string                                   skip_reason_;
 };
 
-std::unique_ptr<compute::SimpleBpeTokenizer> ToolRunnerTest::tok_;
+std::unique_ptr<compute::HFTokenizer> ToolRunnerTest::tok_;
 std::string                                  ToolRunnerTest::skip_reason_;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

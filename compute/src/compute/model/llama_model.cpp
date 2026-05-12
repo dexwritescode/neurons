@@ -16,7 +16,7 @@ namespace compute {
 
 LlamaModel::LlamaModel(
     ModelConfig        config,
-    SimpleBpeTokenizer tokenizer,
+    HFTokenizer tokenizer,
     ComputeBackend*    backend)
     : config_(std::move(config))
     , tokenizer_(std::move(tokenizer))
@@ -44,7 +44,7 @@ Result<LlamaModel> LlamaModel::from_model_dir(
 
     auto& [config, mlx_weights] = *mlx_result;
 
-    auto tokenizer_result = SimpleBpeTokenizer::from_model_dir(model_dir);
+    auto tokenizer_result = HFTokenizer::from_model_dir(model_dir);
     if (!tokenizer_result) return std::unexpected(tokenizer_result.error());
 
     if (!config.is_valid())
@@ -141,7 +141,7 @@ size_t LlamaModel::num_parameters() const {
 // ── Tool-use ──────────────────────────────────────────────────────────────────
 
 LlamaModel::ToolFamily LlamaModel::detect_tool_family(
-    const SimpleBpeTokenizer& tok, const ModelConfig& cfg)
+    const HFTokenizer& tok, const ModelConfig& cfg)
 {
     // Qwen2.5 / Qwen3 Instruct: has <tool_call> in vocab (same format for both)
     if ((cfg.model_type == "qwen2" || cfg.model_type == "qwen3") &&

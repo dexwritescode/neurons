@@ -3,7 +3,7 @@
 #include "../core/compute_types.h"
 #include "model_config.h"
 #include "sampler.h"
-#include "simple_bpe_tokenizer.h"
+#include "hf_tokenizer.h"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -57,7 +57,7 @@ public:
 
     virtual const ModelConfig&        config()         const = 0;
     virtual const std::string&        model_type()     const = 0;
-    virtual const SimpleBpeTokenizer& tokenizer()      const = 0;
+    virtual const HFTokenizer& tokenizer()      const = 0;
     virtual size_t                    num_parameters() const = 0;
 
     // ── Tool-use capability ───────────────────────────────────────────────────

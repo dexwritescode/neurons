@@ -15,7 +15,7 @@
 #include "mcp/mcp_types.h"
 #include "compute/model/tool_runner.h"
 #include "compute/model/language_model.h"
-#include "compute/model/simple_bpe_tokenizer.h"
+#include "compute/model/hf_tokenizer.h"
 #include "compute/model/model_config.h"
 #include "compute/core/compute_backend.h"
 #include "compute/core/compute_types.h"
@@ -33,7 +33,7 @@ public:
     static constexpr const char* kTokPath =
         "/Users/dex/.neurons/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0";
 
-    explicit StubModel(compute::SimpleBpeTokenizer tok) : tok_(std::move(tok)) {
+    explicit StubModel(compute::HFTokenizer tok) : tok_(std::move(tok)) {
         config_.vocab_size            = 32000;
         config_.hidden_size           = 1;
         config_.num_hidden_layers     = 1;
@@ -90,13 +90,13 @@ public:
         return " <<RESULT:" + name + ":" + result_json + ">>";
     }
 
-    const compute::SimpleBpeTokenizer& tokenizer()     const override { return tok_; }
+    const compute::HFTokenizer& tokenizer()     const override { return tok_; }
     const compute::ModelConfig&        config()         const override { return config_; }
     const std::string&                 model_type()    const override { return config_.model_type; }
     size_t                             num_parameters() const override { return 0; }
 
 private:
-    compute::SimpleBpeTokenizer   tok_;
+    compute::HFTokenizer   tok_;
     compute::ModelConfig          config_;
     std::vector<std::vector<int>> turns_;
     int                           turn_ = 0;
@@ -111,7 +111,7 @@ protected:
             skip_reason_ = "TinyLlama not downloaded";
             return;
         }
-        auto tok = compute::SimpleBpeTokenizer::from_model_dir(
+        auto tok = compute::HFTokenizer::from_model_dir(
             fs::path{StubModel::kTokPath});
         if (!tok.has_value()) {
             skip_reason_ = "Failed to load tokenizer: " + tok.error().message;
@@ -138,7 +138,7 @@ protected:
         mgr_->set_rule(allow_all);
 
         // Load tokenizer for StubModel.
-        auto tok = compute::SimpleBpeTokenizer::from_model_dir(
+        auto tok = compute::HFTokenizer::from_model_dir(
             fs::path{StubModel::kTokPath});
         model_ = std::make_unique<StubModel>(std::move(*tok));
     }
