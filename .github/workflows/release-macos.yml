@@ -109,10 +109,10 @@ jobs:
           gh release upload "${{ needs.check-release.outputs.tag }}" \
             "Neurons-${{ needs.check-release.outputs.tag }}-arm64.dmg"
 
-      - name: Upload neuron binary to release
+      - name: Upload neurons binary to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp build/bin/neuron "neuron-${{ needs.check-release.outputs.tag }}-arm64"
+          cp build/bin/neurons "neurons-${{ needs.check-release.outputs.tag }}-arm64"
           gh release upload "${{ needs.check-release.outputs.tag }}" \
-            "neuron-${{ needs.check-release.outputs.tag }}-arm64"
+            "neurons-${{ needs.check-release.outputs.tag }}-arm64"

@@ -188,6 +188,8 @@ if(BUILD_TESTING)
         tests/compute/test_qwen3_transformer_moe_integration.cpp
         tests/compute/test_chat_template.cpp
         tests/compute/test_tool_runner.cpp
+        tests/compute/test_sampler.cpp
+        tests/compute/test_hf_tokenizer.cpp
     )
 
     target_link_libraries(compute_tests PRIVATE

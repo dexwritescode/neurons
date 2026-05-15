@@ -14,7 +14,7 @@ A from-scratch LLM inference engine and chat application. Built to understand ho
 Neurons is a full-stack local AI system:
 
 - **`compute/`** — C++23 inference library. Implements the transformer forward pass from first principles: quantized matmul, RoPE, RMSNorm, KV cache, sampling. Pluggable backends (`ComputeBackend` interface).
-- **`service/`** — gRPC inference server + OpenAI-compatible HTTP endpoint. Embedded in the `neuron` binary (`neuron serve`). Runs on any machine on your network.
+- **`service/`** — gRPC inference server + OpenAI-compatible HTTP endpoint. Embedded in the `neurons` binary (`neurons server`). Runs on any machine on your network.
 - **`cli/`** — Terminal interface. Chat, download models, manage nodes, start a server.
 - **`gui/`** — Flutter macOS app. Chat UI, model browser, multi-node management, live tok/s stats.
 
@@ -204,7 +204,7 @@ The app opens on the Chats screen. Go to **Browse** to search HuggingFace, downl
 
 ```bash
 # Start with an HTTP endpoint on port 8080
-./build/bin/neuron server --http-port 8080 --model mlx-community/Qwen2.5-3B-Instruct-4bit
+./build/bin/neurons server --http-port 8080 --model mlx-community/Qwen2.5-3B-Instruct-4bit
 
 # Point any OpenAI client at it
 curl http://localhost:8080/v1/chat/completions \
@@ -234,7 +234,7 @@ neurons config  show/set         Configuration
 
 ## Remote nodes
 
-Neurons supports connecting multiple machines as inference nodes. Each node runs `neurons-service`; the GUI and CLI connect to all of them and route requests.
+Neurons supports connecting multiple machines as inference nodes. Each node runs `neurons server`; the GUI and CLI connect to all of them and route requests.
 
 ```bash
 # On the remote machine

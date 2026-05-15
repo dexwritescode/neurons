@@ -1,6 +1,6 @@
 # neurons_gui
 
-Flutter GUI for the Neurons inference engine. Connects to the `neuron` inference server (gRPC) and provides a local-first chat interface.
+Flutter GUI for the Neurons inference engine. Connects to the `neurons` inference server (gRPC) and provides a local-first chat interface.
 
 ## Running the app (macOS)
 
@@ -17,7 +17,7 @@ This compiles `libneurons_core.dylib` and installs it to `gui/macos/neurons_core
 **Step 2 — Start the inference server** (from the repo root):
 
 ```bash
-./build/bin/neuron serve
+./build/bin/neurons serve
 ```
 
 **Step 3 — Run the Flutter app** (from the `gui/` directory):
@@ -31,7 +31,7 @@ flutter run -d macos
 If you haven't changed any C++ code, skip Step 1:
 
 ```bash
-./build/bin/neuron serve &
+./build/bin/neurons serve &
 flutter run -d macos
 ```
 
