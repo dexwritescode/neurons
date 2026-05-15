@@ -21,8 +21,12 @@ CMAKE_BUILD     := cmake --build $(BUILD_DIR) -j$(JOBS)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+.PHONY: _tokenizers_sys
+_tokenizers_sys: ## Build Rust tokenizers-sys static lib (required before cmake)
+	@cargo build --release --manifest-path compute/tokenizers-sys/Cargo.toml
+
 .PHONY: _configure
-_configure:
+_configure: _tokenizers_sys
 	@if [ ! -f "$(BUILD_DIR)/CMakeCache.txt" ]; then \
 	    echo "==> Configuring ($(BUILD_TYPE))"; \
 	    $(CMAKE_CONFIGURE); \

@@ -33,13 +33,15 @@ jobs:
       - name: Install gRPC + Protobuf + coreutils
         run: brew install grpc coreutils
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
         with:
-          workspaces: compute/tokenizers-sys
+          path: compute/tokenizers-sys/target
+          key: tokenizers-sys-${{ runner.os }}-${{ hashFiles('compute/tokenizers-sys/Cargo.lock', 'compute/tokenizers-sys/src/**') }}
+          restore-keys: tokenizers-sys-${{ runner.os }}-
+
+      - name: Build tokenizers-sys
+        run: cargo build --release --manifest-path compute/tokenizers-sys/Cargo.toml
 
       - name: Cache CMake fetched dependencies
         uses: actions/cache@v4

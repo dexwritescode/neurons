@@ -2,17 +2,14 @@ cmake_minimum_required(VERSION 3.16)
 
 project(compute_backend VERSION 1.0.0 LANGUAGES CXX)
 
-# ── Rust / Corrosion ──────────────────────────────────────────────────────────
-# Corrosion drives cargo build from CMake; tokenizers_sys is the Rust staticlib
-# that wraps HuggingFace tokenizers 0.32.1.
-include(FetchContent)
-FetchContent_Declare(
-    Corrosion
-    GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    GIT_TAG        v0.5.1
+# ── Rust / tokenizers-sys ─────────────────────────────────────────────────────
+# libtokenizers_sys.a is built by `cargo build --release` in compute/tokenizers-sys/
+# BEFORE cmake runs (same pattern as `brew install grpc` before cmake).
+# CMake just links the pre-built static library — no Corrosion, no rustup needed.
+add_library(tokenizers_sys STATIC IMPORTED GLOBAL)
+set_target_properties(tokenizers_sys PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/tokenizers-sys/target/release/libtokenizers_sys.a"
 )
-FetchContent_MakeAvailable(Corrosion)
-corrosion_import_crate(MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/tokenizers-sys/Cargo.toml)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
